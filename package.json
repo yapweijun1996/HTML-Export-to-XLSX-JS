@@ -1,0 +1,31 @@
+{
+  "name": "html-export-to-xlsx-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser HTML table and print layout exporter with explicit currency configuration.",
+  "license": "MIT",
+  "author": "YAP WEI JUN",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:check": "node scripts/build.mjs --check",
+    "test": "node --test tests/unit/*.test.js",
+    "test:browser": "playwright test",
+    "check": "npm run test && npm run build:check && npm run test:browser"
+  },
+  "peerDependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "@playwright/test": "1.64.0",
+    "exceljs": "4.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yapweijun1996/HTML-Export-to-XLSX-JS.git"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": "0.1.0",
+  "files": {
+    "export_to_xlsx.js": {
+      "bytes": 112071,
+      "sha256": "5d9589e6ad0e9db02e3a3e7c4b1a52d8b70250798197aea23a5737d4809eac0f"
+    },
+    "export_to_xlsx.min.js": {
+      "bytes": 47782,
+      "sha256": "a63c46107db244842f404d39e5d9e29cbbdd0d258b9f0cce69f79f0e1b6ff995"
+    }
+  }
+}

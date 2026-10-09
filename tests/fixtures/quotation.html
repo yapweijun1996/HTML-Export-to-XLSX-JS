@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Synthetic quotation regression</title>
+    <style>
+        body { margin: 16px; font: 14px Arial, sans-serif; }
+        #export { width: 750px; background: white; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        td, th { padding: 4px; vertical-align: top; }
+        .money { text-align: right; }
+        .subtotal td { border-top: 1px solid black; }
+        [data-xlsx-page-break] { height: 12px; }
+    </style>
+</head>
+<body>
+<button data-xlsx-button data-xlsx-target="#export" class="html_to_excel_btn">Export XLSX</button>
+<div id="export" data-xlsx-export class="exp_to_excel_button_content" data-excel-currency="HKD">
+    <table><tr><th colspan="6">Synthetic quotation / 測試報價單</th></tr></table>
+    <table id="details">
+        <colgroup><col style="width:7%"><col style="width:49%"><col style="width:8%"><col style="width:8%"><col style="width:14%"><col style="width:14%"></colgroup>
+        <thead><tr><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Price</th><th>Amount</th></tr></thead>
+        <tbody id="rows"></tbody>
+    </table>
+    <div data-xlsx-page-break class="pagebreak_bf_processed"></div>
+    <table>
+        <tr><td colspan="4">Terms / 條款<br>All values and images in this fixture are fictional.</td></tr>
+        <tr><td colspan="2"><img src="./stamp.svg" width="80" height="80" alt="Synthetic stamp"></td><td colspan="2">Accepted by</td></tr>
+    </table>
+    <table data-xlsx-ignore id="mainapproval"><tr><td>INTERNAL OMITTED</td></tr></table>
+</div>
+<script src="/node_modules/exceljs/dist/exceljs.min.js"></script>
+<script>
+    const groups = [['A', 12, 120.25], ['B', 12, 80], ['C', 12, 100], ['E', 12, 50], ['F', 12, 140], ['G', 8, 10.5]];
+    const rows = document.querySelector('#rows');
+    let subtotal = 0;
+    for (const [code, count, amount] of groups) {
+        for (let item = 1; item <= count; item++) {
+            const value = item === count ? amount : 0;
+            const row = document.createElement('tr');
+            row.innerHTML = '<td>' + code + item + '</td><td>Test equipment / 測試設備 ' + item +
+                '</td><td data-excel-type="number">1</td><td>Set</td><td class="money">$ ' +
+                value.toFixed(2) + '</td><td class="money">$ ' + value.toFixed(2) + '</td>';
+            rows.appendChild(row);
+        }
+        subtotal += amount;
+        if (code === 'A' || code === 'B' || code === 'G') {
+            const row = document.createElement('tr'); row.className = 'subtotal';
+            row.innerHTML = '<td colspan="5" class="money">Sub - Total HKD:</td><td class="money">$ ' + subtotal.toFixed(2) + '</td>';
+            rows.appendChild(row); subtotal = 0;
+        }
+    }
+    const total = document.createElement('tr');
+    total.innerHTML = '<td colspan="5" class="money">Total Amount HKD:</td><td class="money">$ 500.75</td>';
+    rows.appendChild(total);
+    const script = document.createElement('script');
+    const mode = new URLSearchParams(location.search).get('mode');
+    script.src = mode === 'baseline' ? '/baseline.js' :
+        mode === 'min' ? '/dist/export_to_xlsx.min.js' : '/dist/export_to_xlsx.js';
+    document.body.appendChild(script);
+</script>
+</body>
+</html>

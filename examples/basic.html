@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HTML to XLSX example</title>
+  <style>
+    body { margin: 24px; font: 14px Arial, sans-serif; }
+    #quotation { width: 750px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #ddd; padding: 8px; }
+    th { text-align: left; }
+    .amount { text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>Editable XLSX export</h1>
+  <button data-xlsx-button data-xlsx-target="#quotation">Export XLSX</button>
+  <p id="status" role="status">All sample data is fictional.</p>
+  <div id="quotation" data-xlsx-export data-excel-currency="HKD" data-excel-locale="en-HK">
+    <table>
+      <tr><th>Item</th><th>Description</th><th>Qty</th><th class="amount">Amount</th></tr>
+      <tr><td>A1</td><td>Sample controller / 測試控制器</td><td data-excel-type="number">2</td><td class="amount">$ 1,200.00</td></tr>
+      <tr><td>A2</td><td>Installation / 安裝</td><td data-excel-type="number">1</td><td class="amount">$ 300.00</td></tr>
+      <tr><td colspan="3" class="amount">Total HKD</td><td class="amount">$ 1,500.00</td></tr>
+    </table>
+  </div>
+  <!-- In a deployed application, host ExcelJS separately and pin a release of this library. -->
+  <script src="../node_modules/exceljs/dist/exceljs.min.js"></script>
+  <script src="../dist/export_to_xlsx.min.js"></script>
+  <script>
+    document.querySelector('button').addEventListener('xlsx:exported', event => {
+      document.querySelector('#status').textContent = event.detail.warnings.length
+        ? 'Exported with warnings; inspect the result before use.' : 'Workbook exported.';
+    });
+    document.querySelector('button').addEventListener('xlsx:error', event => {
+      document.querySelector('#status').textContent = 'Export failed: ' + event.detail.message;
+    });
+  </script>
+</body>
+</html>
