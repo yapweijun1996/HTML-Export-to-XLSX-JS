@@ -2,12 +2,12 @@
   "version": "0.1.0",
   "files": {
     "export_to_xlsx.js": {
-      "bytes": 132217,
-      "sha256": "8b50083cef92a5617603be4ad754d2934ec2a8a9cde39409770c8faf6a6a3e68"
+      "bytes": 128764,
+      "sha256": "74793cd8ba51f7183e7263f52ac37361e9ee2a59b4377513f89019a7726fe8e5"
     },
     "export_to_xlsx.min.js": {
-      "bytes": 60253,
-      "sha256": "c3143aa35d6022959b15abf6d36f345170626494ad7c48e38ae6c1b9f8911a76"
+      "bytes": 58962,
+      "sha256": "f7c35033071f0eb22a5a80bcedcdcfa0f0276d37b856ff6ca91f3915bedd6e00"
     }
   }
 }

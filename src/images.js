@@ -204,14 +204,6 @@ export function createImages(dependencies) {
 		};
 	};
 
-	const clampOffset = (offsetPx, maxPx) => {
-		if (!isFinite(offsetPx) || offsetPx < 0) return 0;
-		if (isFinite(maxPx) && maxPx > 0) {
-			return Math.round(Math.max(0, Math.min(offsetPx, maxPx)));
-		}
-		return Math.round(offsetPx);
-	};
-
 	const toImageAlignment = (value) => {
 		if (!value) return null;
 		const keyword = String(value).trim().toLowerCase();
@@ -568,7 +560,7 @@ export function createImages(dependencies) {
 
 
 
-  return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
+  return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
 }
 
 // Bounded concurrency prevents large documents from converting every image at once.

@@ -497,67 +497,9 @@
       const finalAdjustment = toPositiveNumber(CONFIG.COLUMN_WIDTH_SCALE) || 1;
       return Math.floor(scaledPx * finalAdjustment / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
     };
-    const pxToColumnWidthForImagePositioning = (px, scale = 1) => {
-      const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
-      const effectiveScale = toPositiveNumber(scale) || 1;
-      const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
-      return Math.floor(scaledPx / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
-    };
     const columnWidthToPixels = (widthChars) => {
       if (!isFiniteNumber(widthChars) || widthChars <= 0) return 0;
       return Math.floor((256 * widthChars + Math.floor(128 / EXCEL_MAX_DIGIT_WIDTH)) / 256 * EXCEL_MAX_DIGIT_WIDTH);
-    };
-    const rowHeightToPixels = (heightPoints) => {
-      if (!isFiniteNumber(heightPoints) || heightPoints <= 0) return 0;
-      return Math.round(heightPoints * CONFIG.CSS_DPI / 72);
-    };
-    const interpolateCoordinate = (valuePx, sourceEdges, targetEdges) => {
-      if (!isFiniteNumber(valuePx) || valuePx <= 0) return 0;
-      const lastIndex = Math.max(0, sourceEdges.length - 2);
-      for (let i = 0; i <= lastIndex; i++) {
-        const start = sourceEdges[i];
-        const end = sourceEdges[i + 1];
-        if (valuePx <= start) {
-          return targetEdges[i] || 0;
-        }
-        if (valuePx > end && i < lastIndex) continue;
-        const span = Math.max(end - start, 1e-4);
-        const ratio = (valuePx - start) / span;
-        const targetStart = targetEdges[i] || 0;
-        const targetEnd = targetEdges[i + 1] || targetStart;
-        return targetStart + ratio * (targetEnd - targetStart);
-      }
-      return targetEdges[targetEdges.length - 1] || 0;
-    };
-    const buildWorksheetEdgeMaps = (worksheet, layoutModel, forImagePositioning = false) => {
-      const columnWidthFn = forImagePositioning ? pxToColumnWidthForImagePositioning : pxToColumnWidth;
-      const columnEdgesPx = [0];
-      for (let i = 0; i < layoutModel.columnWidthsPx.length; i++) {
-        const column = worksheet.getColumn(i + 1);
-        const widthChars = toPositiveNumber(column?.width) || columnWidthFn(layoutModel.columnWidthsPx[i], EXPORT_SCALE);
-        const widthPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, columnWidthToPixels(widthChars));
-        columnEdgesPx.push(columnEdgesPx[i] + widthPx);
-        debugLog(`Column width map (forImage: ${forImagePositioning})`, {
-          index: i,
-          htmlPx: layoutModel.columnWidthsPx[i],
-          excelWidthChars: widthChars,
-          excelPx: widthPx
-        });
-      }
-      const rowEdgesPx = [0];
-      for (let i = 0; i < layoutModel.rowHeightsPx.length; i++) {
-        const row = worksheet.getRow(i + 1);
-        const heightPoints = toPositiveNumber(row?.height) || pxToPoint(layoutModel.rowHeightsPx[i], ROW_SCALE);
-        const heightPx = Math.max(CONFIG.MIN_ROW_HEIGHT_PX, rowHeightToPixels(heightPoints));
-        rowEdgesPx.push(rowEdgesPx[i] + heightPx);
-        debugLog("Row height map", {
-          index: i,
-          htmlPx: layoutModel.rowHeightsPx[i],
-          excelPoints: heightPoints,
-          excelPx: heightPx
-        });
-      }
-      return { columnEdgesPx, rowEdgesPx };
     };
     const SNAP_PRECISION = 4;
     const snapToPrecision = (value) => {
@@ -565,15 +507,6 @@
       const factor = 10 ** SNAP_PRECISION;
       const snapped = Math.round(value * factor) / factor;
       return snapped < 0 ? 0 : snapped;
-    };
-    const resolveSize = (...candidates) => {
-      for (const candidate of candidates) {
-        const snapped = snapToPrecision(candidate);
-        if (snapped > 0) {
-          return snapped;
-        }
-      }
-      return 0;
     };
     const findEdgeIndex = (edges, value) => {
       if (!edges.length || !Number.isFinite(value)) return -1;
@@ -613,7 +546,7 @@
       return result;
     };
     const isFiniteNumber = (value) => typeof Number.isFinite === "function" ? Number.isFinite(value) : isFinite(value);
-    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, MAX_ROW_HEIGHT_PT, splitTallRows, isFiniteNumber };
+    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, columnWidthToPixels, SNAP_PRECISION, snapToPrecision, findEdgeIndex, normalizeEdges, MAX_ROW_HEIGHT_PT, splitTallRows, isFiniteNumber };
   }
 
   // src/styles.js
@@ -1917,13 +1850,6 @@
         offset: value - edges[lastIndex]
       };
     };
-    const clampOffset = (offsetPx, maxPx) => {
-      if (!isFinite(offsetPx) || offsetPx < 0) return 0;
-      if (isFinite(maxPx) && maxPx > 0) {
-        return Math.round(Math.max(0, Math.min(offsetPx, maxPx)));
-      }
-      return Math.round(offsetPx);
-    };
     const toImageAlignment = (value) => {
       if (!value) return null;
       const keyword = String(value).trim().toLowerCase();
@@ -2240,7 +2166,7 @@
         placeImagesPrecisely(worksheet, workbook, preciseFallbackJobs, layoutModel);
       }
     };
-    return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
+    return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
   }
   async function mapWithConcurrency(items, limit, mapper) {
     const results = new Array(items.length);

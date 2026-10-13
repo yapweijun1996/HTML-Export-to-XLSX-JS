@@ -269,9 +269,9 @@ regression test failed on the code before its fix.
 
 ## Cleanup
 
-These helpers are exported but not called by production code:
+Removed. These helpers were exported but not called by any source, adapter or test:
 `interpolateCoordinate`, `buildWorksheetEdgeMaps` (and `pxToColumnWidthForImagePositioning`
-and `rowHeightToPixels`, which only it uses) and `resolveSize` in
+and `rowHeightToPixels`, which only it used) and `resolveSize` in
 [src/layout-metrics.js](src/layout-metrics.js), `clampOffset` in
 [src/images.js](src/images.js), and `escapeRegExp` in [src/values.js](src/values.js),
 whose last caller was the removed inline border fallback.

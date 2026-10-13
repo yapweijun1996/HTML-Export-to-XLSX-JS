@@ -77,6 +77,7 @@
   with ROW_SCALE_FLOOR when an explicit rowScale is below fontScale.
 - Blend translucent colors over their backdrop, read borders from the computed style
   only, keep refined-grid columns at their measured width, and validate sheetName.
+- Remove unused layout, image and value helpers.
 - Record the code review findings and their status in KNOWN_ISSUES.md.
 
 ## 0.1.0 — Preview

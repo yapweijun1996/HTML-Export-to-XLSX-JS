@@ -1,6 +1,4 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
-export const escapeRegExp = text => String(text).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
-
 const currencies = typeof Intl.supportedValuesOf === 'function'
     ? new Set(Intl.supportedValuesOf('currency')) : null;
 
