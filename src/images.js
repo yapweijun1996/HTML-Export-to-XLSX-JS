@@ -1,6 +1,7 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createImages(dependencies) {
   const { CONFIG, IMAGE_SCALE, columnWidthToPixels, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+	const MAX_CANVAS_AREA = 16777216, MAX_CANVAS_SIDE = 16384;
 	const imageIds = new WeakMap();
 	const getImageId = (workbook, job) => {
 		let formats = imageIds.get(workbook);
@@ -51,13 +52,22 @@ export function createImages(dependencies) {
 			nativeRow: fromRow.index, nativeRowOff: fromRow.offset }, br: { nativeCol: col.index, nativeColOff: col.offset,
 			nativeRow: row.index, nativeRowOff: row.offset }, editAs: 'oneCell' };
 	};
+	// A wait that failed once in this export is not repeated, so an image that never loads,
+	// such as an off-screen lazy image, costs one timeout rather than one per stage.
+	const failedLoads = new WeakMap();
 	const ensureImageLoaded = (img) => {
 		if (img.complete) {
 			if (img.naturalWidth && img.naturalHeight) return Promise.resolve();
 			return Promise.reject(new Error('Image failed to load (already complete with zero size)'));
 		}
+		if (failedLoads.has(img)) return Promise.reject(failedLoads.get(img));
 		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => { cleanup(); reject(new Error('Image load timed out')); }, CONFIG.IMAGE_TIMEOUT_MS);
+			const fail = (error) => {
+				cleanup();
+				failedLoads.set(img, error);
+				reject(error);
+			};
+			const timer = setTimeout(() => fail(new Error('Image load timed out')), CONFIG.IMAGE_TIMEOUT_MS);
 			const cleanup = () => {
 				clearTimeout(timer);
 				img.removeEventListener('load', onLoad);
@@ -67,10 +77,8 @@ export function createImages(dependencies) {
 				cleanup();
 				resolve();
 			};
-			const onError = (err) => {
-				cleanup();
-				reject(err);
-			};
+			// The error event carries no message; report an Error so warnings stay readable.
+			const onError = () => fail(new Error('Image failed to load'));
 			img.addEventListener('load', onLoad, { once: true });
 			img.addEventListener('error', onError, { once: true });
 		});
@@ -130,8 +138,14 @@ export function createImages(dependencies) {
 		}
 
 		const imageScale = toPositiveNumber(IMAGE_SCALE) || 1;
-		const renderWidth = Math.max(1, Math.round(width * imageScale));
-		const renderHeight = Math.max(1, Math.round(height * imageScale));
+		// Stay within the smallest common canvas limits (Safari allows 16,777,216 pixels).
+		// Only the raster resolution drops; the drawing keeps its measured size.
+		const fit = Math.min(1, Math.sqrt(MAX_CANVAS_AREA / Math.max(1, width * height * imageScale * imageScale)),
+			MAX_CANVAS_SIDE / Math.max(1, width * imageScale), MAX_CANVAS_SIDE / Math.max(1, height * imageScale));
+		const rasterSize = value => Math.max(1, fit < 1 ? Math.floor(value * imageScale * fit) : Math.round(value * imageScale));
+		const renderWidth = rasterSize(width);
+		const renderHeight = rasterSize(height);
+		if (fit < 1) debugLog('Reduced image raster to the canvas limit', `${renderWidth}x${renderHeight}`);
 
 		const canvas = document.createElement('canvas');
 		canvas.width = renderWidth;

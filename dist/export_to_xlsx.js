@@ -1825,6 +1825,7 @@
   // src/images.js
   function createImages(dependencies) {
     const { CONFIG, IMAGE_SCALE, columnWidthToPixels, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+    const MAX_CANVAS_AREA = 16777216, MAX_CANVAS_SIDE = 16384;
     const imageIds = /* @__PURE__ */ new WeakMap();
     const getImageId = (workbook, job) => {
       let formats = imageIds.get(workbook);
@@ -1874,16 +1875,20 @@
         nativeRowOff: row.offset
       }, editAs: "oneCell" };
     };
+    const failedLoads = /* @__PURE__ */ new WeakMap();
     const ensureImageLoaded = (img) => {
       if (img.complete) {
         if (img.naturalWidth && img.naturalHeight) return Promise.resolve();
         return Promise.reject(new Error("Image failed to load (already complete with zero size)"));
       }
+      if (failedLoads.has(img)) return Promise.reject(failedLoads.get(img));
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const fail = (error) => {
           cleanup();
-          reject(new Error("Image load timed out"));
-        }, CONFIG.IMAGE_TIMEOUT_MS);
+          failedLoads.set(img, error);
+          reject(error);
+        };
+        const timer = setTimeout(() => fail(new Error("Image load timed out")), CONFIG.IMAGE_TIMEOUT_MS);
         const cleanup = () => {
           clearTimeout(timer);
           img.removeEventListener("load", onLoad);
@@ -1893,10 +1898,7 @@
           cleanup();
           resolve();
         };
-        const onError = (err) => {
-          cleanup();
-          reject(err);
-        };
+        const onError = () => fail(new Error("Image failed to load"));
         img.addEventListener("load", onLoad, { once: true });
         img.addEventListener("error", onError, { once: true });
       });
@@ -1950,8 +1952,16 @@
         return { ...job, error: err };
       }
       const imageScale = toPositiveNumber(IMAGE_SCALE) || 1;
-      const renderWidth = Math.max(1, Math.round(width * imageScale));
-      const renderHeight = Math.max(1, Math.round(height * imageScale));
+      const fit = Math.min(
+        1,
+        Math.sqrt(MAX_CANVAS_AREA / Math.max(1, width * height * imageScale * imageScale)),
+        MAX_CANVAS_SIDE / Math.max(1, width * imageScale),
+        MAX_CANVAS_SIDE / Math.max(1, height * imageScale)
+      );
+      const rasterSize = (value) => Math.max(1, fit < 1 ? Math.floor(value * imageScale * fit) : Math.round(value * imageScale));
+      const renderWidth = rasterSize(width);
+      const renderHeight = rasterSize(height);
+      if (fit < 1) debugLog("Reduced image raster to the canvas limit", `${renderWidth}x${renderHeight}`);
       const canvas = document.createElement("canvas");
       canvas.width = renderWidth;
       canvas.height = renderHeight;
@@ -2943,6 +2953,7 @@
   var initialize = () => {
     for (const button of document.querySelectorAll("[data-xlsx-button]")) {
       bindButton(button, { root: button.getAttribute("data-xlsx-target") || "[data-xlsx-export]" });
+      button.addEventListener("xlsx:error", (event) => console.error("XLSX export failed:", event.detail));
     }
     installGlobe3(window.HtmlToXlsx);
   };

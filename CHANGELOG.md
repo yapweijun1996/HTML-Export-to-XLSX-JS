@@ -69,6 +69,9 @@
   inner center/div align blocks. Place images outside table cells at their rendered
   position, start aligned image flows at the images' rendered top, and place an
   unforced flow that overflows its cell at the rendered position with a warning.
+- Log failures of automatically bound buttons to the console. Wait at most once for
+  an image that never loads, report image load errors as messages, and keep rasters
+  within common browser canvas limits.
 - Record the code review findings and their status in KNOWN_ISSUES.md.
 
 ## 0.1.0 — Preview

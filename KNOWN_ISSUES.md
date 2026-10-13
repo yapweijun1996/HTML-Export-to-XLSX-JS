@@ -11,8 +11,10 @@ Evidence levels:
 - **Code** — found by reading the source; not yet reproduced.
 
 Regression tests for fixed issues are in
-[tests/unit/values.test.js](tests/unit/values.test.js) and
-[tests/browser/known-issues.test.js](tests/browser/known-issues.test.js).
+[tests/unit/values.test.js](tests/unit/values.test.js),
+[tests/unit/images.test.js](tests/unit/images.test.js) and
+[tests/browser/known-issues.test.js](tests/browser/known-issues.test.js). Each
+regression test failed on the code before its fix.
 
 ## Summary
 
@@ -27,16 +29,16 @@ Regression tests for fixed issues are in
 | BUG-07 | Medium | Images | An image that overflows its cell rejects the whole export in the default mode | Verified | Fixed |
 | BUG-08 | Low | Workbook | Rows below the exported grid are 0.75pt (1px) tall | Verified | Open |
 | BUG-09 | Medium | Styles | Semi-transparent colors are written with an alpha byte that Excel ignores | Verified (output) | Open |
-| BUG-10 | Low | API | Failures from generic `[data-xlsx-button]` buttons are silent | Code | Open |
-| BUG-11 | Low | Images | Off-screen lazy images wait twice the timeout and are then dropped | Code | Open |
-| BUG-12 | Low | Images | Image load errors are reported as Event objects | Code | Open |
+| BUG-10 | Low | API | Failures from generic `[data-xlsx-button]` buttons are silent | Verified | Fixed |
+| BUG-11 | Low | Images | Off-screen lazy images wait twice the timeout and are then dropped | Verified | Fixed |
+| BUG-12 | Low | Images | Image load errors are reported as Event objects | Verified | Fixed |
 | BUG-13 | Low | Workbook | Row heights are not capped at Excel's 409pt maximum | Code | Open |
 | BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Code | Open |
 | BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Code | Open |
 | BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Code | Open |
 | BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code | Open |
 | BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Open |
-| BUG-19 | Low | Images | Raster canvases have no size cap | Code | Open |
+| BUG-19 | Low | Images | Raster canvases have no size cap | Verified | Fixed |
 | BUG-20 | Low | Config | sheetName is not validated | Code | Open |
 
 ## Details
@@ -159,6 +161,9 @@ Regression tests for fixed issues are in
   [src/browser.js](src/browser.js) lines 7-9 have no listener, so a click that fails
   produces no message and no console output. The Globe3 adapter adds its own listener.
 - **Fix:** log to the console when no `xlsx:error` listener calls `preventDefault`.
+- **Status:** fixed. Buttons bound automatically through `data-xlsx-button` log every
+  failure with `console.error`. This avoids a `preventDefault` contract, and the adapter's
+  buttons are not affected, so Globe3 failures are not logged twice.
 
 ### BUG-11 Off-screen lazy images wait twice the timeout and are then dropped
 
@@ -168,6 +173,9 @@ Regression tests for fixed issues are in
   of 4, many lazy images can delay an export by minutes, and the images are then omitted.
 - **Fix:** skip the second wait for an image whose preload already failed, and document
   the lazy-loading limitation. Decoding through `img.decode()` does not force a lazy load.
+- **Status:** fixed. A failed or timed-out wait is remembered for the export, so the
+  second stage fails at once. Off-screen lazy images are still omitted, with warnings,
+  because forcing them to load would change the source DOM; the README documents this.
 
 ### BUG-12 Image load errors are reported as Event objects
 
@@ -175,6 +183,7 @@ Regression tests for fixed issues are in
   ([src/images.js](src/images.js) lines 70-73). `warnLog` keeps it unchanged because it is
   not an `Error`, and `IMAGE_SKIPPED` later reports `[object Event]`.
 - **Fix:** reject with `new Error('Image failed to load')`.
+- **Status:** fixed.
 
 ### BUG-13 Row heights are not capped at Excel's 409pt maximum
 
@@ -230,6 +239,8 @@ Regression tests for fixed issues are in
   exceed Safari's 16.7-megapixel canvas limit and are dropped. Embedded PNGs also grow
   the workbook considerably.
 - **Fix:** cap the canvas area and lower the scale for large images.
+- **Status:** fixed. Rasters stay within 16,777,216 pixels and 16,384 pixels per side.
+  The drawing keeps its measured size at a lower resolution.
 
 ### BUG-20 sheetName is not validated
 

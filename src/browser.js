@@ -6,6 +6,8 @@ window.HtmlToXlsx = Object.freeze({ exportXlsx, bindButton, downloadBuffer, vers
 const initialize = () => {
     for (const button of document.querySelectorAll('[data-xlsx-button]')) {
         bindButton(button, { root: button.getAttribute('data-xlsx-target') || '[data-xlsx-export]' });
+        // Without a page handler a failed click would leave no trace; keep a console record.
+        button.addEventListener('xlsx:error', event => console.error('XLSX export failed:', event.detail));
     }
     // The adapter acts only when legacy selectors exist, keeping generic use independent of ERP markup.
     installGlobe3(window.HtmlToXlsx);

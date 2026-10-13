@@ -58,7 +58,8 @@ HtmlToXlsx.bindButton(button, options) returns an unbind function. Binding the s
 button again replaces the earlier handler. Successful button exports emit
 xlsx:exported with the result in event.detail; failures emit xlsx:error with
 the Error. Direct API calls reject on failure. Buttons are restored after either
-outcome. Loading the script after DOMContentLoaded is supported.
+outcome. Buttons bound automatically through data-xlsx-button also log failures
+to the browser console. Loading the script after DOMContentLoaded is supported.
 
 ### Options
 
@@ -160,7 +161,12 @@ rejects the export. Child-table cells retain their own metadata and document def
 Images are embedded in the workbook. Same-origin or CORS-enabled images work;
 browser security restrictions cannot be bypassed. Image failures produce warnings
 while valid content continues. Inspect warnings before treating an export as
-complete. Image load waits and processing concurrency are bounded. Images beside
+complete. Image load waits and processing concurrency are bounded. An image that
+fails or times out is not waited for again in the same export. Browsers do not load
+off-screen loading="lazy" images, so those images are omitted with warnings unless
+they are loaded before export. Rasters stay within 16,777,216 pixels and 16,384
+pixels per side, the smallest common canvas limits; larger images keep their drawing
+size at a lower resolution. Images beside
 nested tables are included; images with zero rendered width or height are omitted.
 Images outside table cells, such as a logo in a div, are placed at their rendered
 position in both placement modes.

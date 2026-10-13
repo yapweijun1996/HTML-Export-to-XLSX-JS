@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import ExcelJS from 'exceljs';
 
-// Regression coverage for KNOWN_ISSUES.md BUG-01 to BUG-07.
+// Regression coverage for the fixed issues in KNOWN_ISSUES.md.
 async function exportHtml(page, mode, html, options = {}) {
     await page.goto('/tests/fixtures/quotation.html?mode=' + mode);
     await page.waitForFunction(() => Boolean(window.HtmlToXlsx));
@@ -30,11 +30,10 @@ async function exportHtml(page, mode, html, options = {}) {
         if (!cell.isMerged || cell.address === cell.master.address) cells.push(cell);
     }));
     expect(result.unchanged).toBe(true);
-    return { ...result, sheet, cells };
+    return { ...result, workbook, sheet, cells };
 }
 
-function imagePosition(image, sheet) {
-    const marker = image.range.tl;
+function imagePosition(image, sheet, marker = image.range.tl) {
     let x = marker.nativeColOff / 9525, y = marker.nativeRowOff / 9525;
     for (let c = 1; c <= marker.nativeCol; c++) {
         x += Math.floor((256 * sheet.getColumn(c).width + 18) / 256 * 7);
@@ -109,5 +108,49 @@ for (const mode of ['', 'min']) {
         expect(result.warnings.map(warning => warning.code)).toEqual(['IMAGE_ALIGNMENT_FALLBACK']);
         await expect(exportHtml(page, mode, html(' data-excel-image-align="inline"'), { imageWidthScale: 1 }))
             .rejects.toThrow(/Image alignment exceeds/);
+    });
+
+    test('a failed click on an auto-bound button is recorded in the console' + suffix, async ({ page }) => {
+        const errors = [];
+        page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+        await page.goto('/tests/fixtures/quotation.html?mode=' + mode);
+        await page.waitForFunction(() => Boolean(window.HtmlToXlsx));
+        await page.evaluate(() => { document.querySelector('#export').innerHTML = '<p>No table</p>'; });
+        await page.click('[data-xlsx-button]');
+        await expect.poll(() => errors.some(text => text.includes('XLSX export failed'))).toBe(true);
+    });
+
+    test('an off-screen lazy image costs one timeout, not one per stage' + suffix, async ({ page }) => {
+        await page.goto('/tests/fixtures/quotation.html?mode=' + mode);
+        await page.waitForFunction(() => Boolean(window.HtmlToXlsx));
+        const result = await page.evaluate(async () => {
+            const root = document.querySelector('#export');
+            const spacer = document.createElement('div');
+            spacer.style.height = '30000px';
+            root.before(spacer);
+            root.innerHTML = '<table><tr><td>LAZY <img loading="lazy" src="./stamp.svg?lazy" width="20" height="20"></td></tr></table>';
+            const image = root.querySelector('img');
+            const started = performance.now();
+            const exported = await HtmlToXlsx.exportXlsx({ root, download: false, imageTimeoutMs: 1000 });
+            return { elapsed: performance.now() - started, loaded: image.naturalWidth > 0,
+                codes: exported.warnings.map(warning => warning.code) };
+        });
+        expect(result.loaded).toBe(false);
+        expect(result.codes).toEqual(expect.arrayContaining(['IMAGE_PRELOAD_FAILED', 'IMAGE_LOAD_FAILED']));
+        expect(result.elapsed).toBeGreaterThanOrEqual(1000);
+        expect(result.elapsed).toBeLessThan(1900);
+    });
+
+    test('large rasters stay within the canvas limit while keeping their drawing size' + suffix, async ({ page }) => {
+        const result = await exportHtml(page, mode, `<table><tr><td>${stamp(4000, 2000)}</td></tr></table>`, { imageWidthScale: 1 });
+        const media = Buffer.from(result.workbook.model.media[0].buffer);
+        const [width, height] = [media.readUInt32BE(16), media.readUInt32BE(20)];
+        expect(width * height).toBeLessThanOrEqual(16777216);
+        expect(Math.max(width, height)).toBeLessThanOrEqual(16384);
+        expect(width).toBeGreaterThan(4000);
+        const image = result.sheet.getImages()[0];
+        const start = imagePosition(image, result.sheet), end = imagePosition(image, result.sheet, image.range.br);
+        expect(Math.abs(end.x - start.x - 4000)).toBeLessThanOrEqual(1);
+        expect(Math.abs(end.y - start.y - 2000)).toBeLessThanOrEqual(1);
     });
 }

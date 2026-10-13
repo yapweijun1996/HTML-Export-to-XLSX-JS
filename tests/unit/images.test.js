@@ -45,6 +45,33 @@ test('aligned image anchors respect merged-cell geometry without fixed pixel off
     }
 });
 
+test('image load failures are Errors and a failed wait is not repeated within an export', async () => {
+    const images = createImages({
+        CONFIG: { ...DEFAULT_CONFIG, IMAGE_TIMEOUT_MS: 20 }, IMAGE_SCALE: 1, columnWidthToPixels: () => 0,
+        debugLog() {}, errorLog() {}, warnLog() {}, isFiniteNumber: Number.isFinite,
+        snapToPrecision: value => value, toPositiveNumber: value => value > 0 ? value : null
+    });
+    const pending = () => {
+        const listeners = {};
+        return { complete: false, listeners,
+            addEventListener(type, listener) { listeners[type] = listener; },
+            removeEventListener(type) { delete listeners[type]; } };
+    };
+    const broken = pending();
+    const first = images.ensureImageLoaded(broken);
+    broken.listeners.error({ type: 'error' });
+    await assert.rejects(first, error => error instanceof Error && error.message === 'Image failed to load');
+    await assert.rejects(images.ensureImageLoaded(broken), /Image failed to load/);
+    assert.deepEqual(broken.listeners, {});
+
+    const lazy = pending();
+    await assert.rejects(images.ensureImageLoaded(lazy), /timed out/);
+    const started = Date.now();
+    await assert.rejects(images.ensureImageLoaded(lazy), /timed out/);
+    assert.ok(Date.now() - started < 15, 'the second wait must not start another timeout');
+    assert.deepEqual(lazy.listeners, {});
+});
+
 test('multiple aligned images keep their spacing rather than collapsing onto the right edge', () => {
     const inline = placement('inline', 2);
     assert.equal(position(inline[0].tl).x, 50);
