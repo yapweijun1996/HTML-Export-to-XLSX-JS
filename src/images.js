@@ -1,6 +1,47 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createImages(dependencies) {
-  const { CONFIG, IMAGE_SCALE, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+  const { CONFIG, IMAGE_SCALE, columnWidthToPixels, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+	const imageIds = new WeakMap();
+	const getImageId = (workbook, job) => {
+		let formats = imageIds.get(workbook);
+		if (!formats) imageIds.set(workbook, formats = new Map());
+		let content = formats.get(job.extension);
+		if (!content) formats.set(job.extension, content = new Map());
+		if (!content.has(job.base64)) {
+			content.set(job.base64, workbook.addImage({ base64: job.base64, extension: job.extension }));
+		}
+		return content.get(job.base64);
+	};
+
+	const getImageRange = (worksheet, tl, ext) => {
+		// ExcelJS 4.4 writes an invalid editAs on oneCellAnchor. A twoCellAnchor
+		// with editAs="oneCell" keeps the same move-with-cell, fixed-size behavior.
+		// Preserve ExcelJS's existing start marker; express the end in real EMUs,
+		// because its fractional coordinates use a different offset unit.
+		const endMarker = (coordinate, sizePx, isColumn) => {
+			let index = Math.floor(coordinate);
+			const cell = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+			const startUnits = isColumn
+				? (cell.isCustomWidth ? Math.floor(cell.width * 10000) : 640000)
+				: (cell.height ? Math.floor(cell.height * 10000) : 180000);
+			let offset = Math.floor((coordinate - index) * startUnits) + Math.round(sizePx * 9525);
+			const limit = isColumn ? 16383 : 1048575;
+			for (;;) {
+				const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+				const span = isColumn
+					? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525
+					: Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+				if (offset < span) return { index, offset };
+				if (index >= limit) throw new RangeError('Image extends beyond the worksheet boundary');
+				offset -= span;
+				index++;
+			}
+		};
+		const col = endMarker(tl.col, ext.width, true);
+		const row = endMarker(tl.row, ext.height, false);
+		return { tl, br: { nativeCol: col.index, nativeColOff: col.offset,
+			nativeRow: row.index, nativeRowOff: row.offset }, editAs: 'oneCell' };
+	};
 	const ensureImageLoaded = (img) => {
 		if (img.complete) {
 			if (img.naturalWidth && img.naturalHeight) return Promise.resolve();
@@ -255,15 +296,12 @@ export function createImages(dependencies) {
 			row: coordinateAt(metrics.rowEdges, safeTop, metrics.startRowIndex)
 		};
 
-		const imgId = workbook.addImage({
-			base64: job.base64,
-			extension: job.extension
-		});
 		const ext = {
 			width: widthPx,
 			height: heightPx
 		};
-		worksheet.addImage(imgId, { tl, ext, editAs: 'oneCell' });
+		const range = getImageRange(worksheet, tl, ext);
+		worksheet.addImage(getImageId(workbook, job), range);
 		debugLog('Placed image using alignment flow', job.element?.src || '(unknown src)', {
 			tl,
 			ext,
@@ -388,11 +426,6 @@ export function createImages(dependencies) {
 
 		for (const job of resolvedJobs) {
 			if (!job.base64) continue;
-			const imgId = workbook.addImage({
-				base64: job.base64,
-				extension: job.extension
-			});
-
 			const parentCell = job.parentCell;
 			if (!parentCell?.sheetPosition) continue;
 			const tl = {
@@ -407,7 +440,8 @@ export function createImages(dependencies) {
 				height: job.height * finalImageScale,
 			};
 
-			worksheet.addImage(imgId, { tl, ext, editAs: 'oneCell' });
+			const range = getImageRange(worksheet, tl, ext);
+			worksheet.addImage(getImageId(workbook, job), range);
 
 			debugLog('Placed image using direct pixel mapping', job.element?.src || '(unknown src)', {
 				tl,

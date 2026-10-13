@@ -391,6 +391,43 @@ export function createStyles(dependencies) {
 		return sizes.length ? sizes.reduce((maximum, size) => Math.max(maximum, size), 0) : parseFloat(cellStyle.fontSize) || 0;
 	};
 
+	const uniformTextProperty = (cell, cs, property) => {
+		const values = visibleTextNodes(cell).map(node => getElementStyle(node.parentElement)[property]);
+		return values.length && values.every(value => value === values[0]) ? values[0] : cs[property];
+	};
+	const decorationCache = new WeakMap();
+	const textDecorations = element => {
+		if (!element) return { underline: false, strike: false };
+		if (decorationCache.has(element)) return decorationCache.get(element);
+		const cs = getElementStyle(element);
+		// Decorations paint inline descendants without appearing in their computed style.
+		const stopsPropagation = element.matches('td, th, table')
+			|| /^(inline-block|inline-table|inline-flex|inline-grid)$/.test(cs.display)
+			|| (cs.cssFloat && cs.cssFloat !== 'none') || /^(absolute|fixed)$/.test(cs.position);
+		const inherited = textDecorations(stopsPropagation ? null : element.parentElement);
+		const lines = cs.textDecorationLine || cs.textDecoration || '';
+		const result = { underline: inherited.underline || /\bunderline\b/.test(lines),
+			strike: inherited.strike || /\bline-through\b/.test(lines) };
+		decorationCache.set(element, result);
+		return result;
+	};
+	const isSingleLineText = (cell, textValue) => {
+		if (!textValue?.trim() || textValue.includes('\n')) return false;
+		let top = -Infinity, bottom = Infinity, found = false;
+		for (const node of visibleTextNodes(cell)) {
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			for (const rect of range.getClientRects()) {
+				if (rect.width <= 0 || rect.height <= 0) continue;
+				top = Math.max(top, rect.top);
+				bottom = Math.min(bottom, rect.bottom);
+				if (bottom <= top) return false;
+				found = true;
+			}
+		}
+		return found;
+	};
+
 	const backgroundCaches = new WeakMap();
 	const extractBackground = (element, root) => {
 		if (!element) return null;
@@ -403,18 +440,19 @@ export function createStyles(dependencies) {
 		return color;
 	};
 
+	const fontCache = new WeakMap();
 	const extractFont = (cell, cs) => {
-		const families = (cs.fontFamily || '').split(',').map((v) => v.trim().replace(/^"|"$/g, ''));
+		if (fontCache.has(cell)) return fontCache.get(cell);
+		const families = (uniformTextProperty(cell, cs, 'fontFamily') || '').split(',').map((v) => v.trim().replace(/^"|"$/g, ''));
 		const name = families[0] || 'Arial';
 		const sizePx = resolveFontSizePx(cell, cs);
 		const weight = normalizeFontWeight(cs.fontWeight);
 		const bold = isCellUniformlyBold(cell, weight);
 
-		// 改进字体大小转换逻辑，确保最小字体大小
+		// Keep the existing font-size floor while converting CSS pixels to points.
 		let excelFontSize;
 		if (sizePx > 0) {
 			const pointSize = pxToPoint(sizePx, FONT_SCALE);
-			// 确保字体大小至少为8pt（Excel最小值）
 			excelFontSize = Math.max(8, Math.round(pointSize * 100) / 100);
 		}
 
@@ -422,12 +460,15 @@ export function createStyles(dependencies) {
 			name,
 			size: excelFontSize,
 			bold,
-			italic: cs.fontStyle === 'italic'
+			italic: /^(italic|oblique)\b/.test(uniformTextProperty(cell, cs, 'fontStyle') || '')
 		};
-		const color = colorToARGB(cs.color);
+		const color = colorToARGB(uniformTextProperty(cell, cs, 'color'));
 		if (color) font.color = { argb: color };
+		const decorations = visibleTextNodes(cell).map(node => textDecorations(node.parentElement));
+		if (decorations.length && decorations.every(value => value.underline)) font.underline = true;
+		if (decorations.length && decorations.every(value => value.strike)) font.strike = true;
 
-		// 添加字体调试信息
+		// Log the measured font metrics only when diagnostics are enabled.
 		if (CONFIG.DEBUG && sizePx > 0) {
 			debugLog('Font extraction', {
 				element: cell?.tagName || 'unknown',
@@ -439,6 +480,7 @@ export function createStyles(dependencies) {
 			});
 		}
 
+		fontCache.set(cell, font);
 		return font;
 	};
 
@@ -601,13 +643,17 @@ export function createStyles(dependencies) {
 
 		const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || undefined;
 		const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || undefined;
-		const wrapText = cs.whiteSpace !== 'nowrap' || (textValue && textValue.includes('\n'));
+		const font = extractFont(cell, cs);
+		const singleLineCaption = (font.bold || font.underline) && isSingleLineText(cell, textValue);
+		const wrapText = singleLineCaption ? false : cs.whiteSpace !== 'nowrap' || Boolean(textValue?.includes('\n'));
 
 		const alignment = {
 			horizontal,
 			vertical,
 			wrapText
 		};
+		// Preserve a visibly single-line caption within the original Excel grid.
+		if (singleLineCaption) alignment.shrinkToFit = true;
 
 		const padding = computeEffectiveHorizontalPadding(cell, cs);
 		const extraLeft = Math.max(0, padding.left - DEFAULT_EXCEL_PADDING_PX);

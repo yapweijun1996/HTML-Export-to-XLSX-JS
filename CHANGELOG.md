@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Preserve uniform visible inline font families, colors, italics, underlines and
+  strike-through decorations, including ancestor decorations and legacy font tags.
+- Keep visibly single-line bold or underlined captions on one line without changing
+  the grid, preserving explicitly multiline and naturally wrapped text.
+- Fit formatted numeric values to their existing cells without changing values or
+  column widths, preventing currency-code expansion from displaying hash marks.
+- Recognize current Globe3 zero-height page-break markers. Preserve marked print
+  pages with calculated percentage scaling and an explicit Fit To opt-out.
+- Use schema-compatible two-cell image anchors with fixed-size behavior, retaining
+  existing start positions and physical image dimensions after serialization.
+- Reuse byte-identical image media within a workbook without combining placements
+  or different raster content. Add raw XLSX drawing and media regression checks.
 - Omit excluded descendants and hidden text/images consistently, preserving visible
   content, explicit line breaks and the source DOM.
 - Remove fixed image offsets and map alignment/precise anchors through merged-cell

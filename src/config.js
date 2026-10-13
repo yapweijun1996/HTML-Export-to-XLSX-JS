@@ -41,6 +41,7 @@ export const DEFAULT_CONFIG = {
 		IMAGE_SPACING_PX: 4,
 		BLACKLIST_SELECTORS: ['[data-xlsx-ignore]'],
 		PAGE_BREAK_SELECTOR: '[data-xlsx-page-break]',
+		RESPECT_PAGE_BREAKS: true,
 		IMAGE_TIMEOUT_MS: 10000,
 		IMAGE_CONCURRENCY: 4,
 		PAGE_SETUP: {
@@ -71,7 +72,7 @@ const mappings = {
     columnWidthScale: 'COLUMN_WIDTH_SCALE', imageWidthScale: 'IMAGE_WIDTH_SCALE',
     imagePlacement: 'IMAGE_PLACEMENT_MODE', imageAlignment: 'IMAGE_ALIGNMENT',
     imageTimeoutMs: 'IMAGE_TIMEOUT_MS', imageConcurrency: 'IMAGE_CONCURRENCY',
-    pageBreakSelector: 'PAGE_BREAK_SELECTOR', exclude: 'BLACKLIST_SELECTORS',
+    pageBreakSelector: 'PAGE_BREAK_SELECTOR', respectPageBreaks: 'RESPECT_PAGE_BREAKS', exclude: 'BLACKLIST_SELECTORS',
     debug: 'DEBUG', sheetName: 'SHEET_NAME'
 };
 const allowed = new Set([...Object.keys(mappings), 'root', 'filename', 'currency', 'locale',
@@ -103,6 +104,7 @@ export function resolveOptions(root, options = {}) {
         }
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError('imageConcurrency must be an integer');
+    if (typeof config.RESPECT_PAGE_BREAKS !== 'boolean') throw new TypeError('respectPageBreaks must be a boolean');
     if (!['alignment', 'precise'].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError('Invalid imagePlacement');
     if (!['inline', 'block', 'center', 'left', 'right', 'precise'].includes(config.IMAGE_ALIGNMENT)) throw new RangeError('Invalid imageAlignment');
     config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== undefined;

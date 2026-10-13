@@ -8,7 +8,7 @@ export function installGlobe3(api, documentRoot = document) {
         currency: root.getAttribute('data-excel-currency') || 'USD',
         locale: root.getAttribute('data-excel-locale') || 'en-US',
         exclude: ['[data-xlsx-ignore]', 'table#mainapproval', 'table#ext_id', 'table#myMenu'],
-        pageBreakSelector: '.pagebreak_bf_processed'
+        pageBreakSelector: '[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf'
     };
     window.exportPrintFormToXlsx = () => api.exportXlsx(options);
     const button = documentRoot.querySelector('.html_to_excel_btn');

@@ -44,6 +44,7 @@ test('export configuration is isolated and rejects invalid numeric tuning', () =
     assert.equal(second.config.PAGE_SETUP.margins.left, 0.5);
     assert.throws(() => resolveOptions(root, { edgeTolerancePx: 0 }));
     assert.throws(() => resolveOptions(root, { imageConcurrency: 1.5 }));
+    assert.throws(() => resolveOptions(root, { respectPageBreaks: 'true' }));
     assert.throws(() => resolveOptions(root, { unknown: true }));
     const exclude = ['.hidden'];
     resolveOptions(root, { exclude });
@@ -59,4 +60,66 @@ test('image task concurrency is bounded and result order is stable', async () =>
     });
     assert.equal(peak, 2);
     assert.deepEqual(result, [0, 2, 4, 6, 8]);
+});
+
+test('formatted numeric cells fit their original merged geometry without changing values', async () => {
+    const writer = createWorkbookWriter(dependencies());
+    const book = writer.createWorkbook();
+    const styles = { numFmt: '"HKD" #,##0.00', alignment: { horizontal: 'right', wrapText: true } };
+    const cells = [1800, -3000, 'Included', '001800'].map((value, rowStart) => ({
+        value, rowStart, rowEnd: rowStart + 1, colStart: 0, colEnd: 2, styles
+    }));
+    const sheet = book.addWorksheet('Test');
+    sheet.columns = [{ width: 3 }, { width: 4 }];
+    writer.writeCellsToSheet(sheet, { cells });
+    const read = new ExcelJS.Workbook();
+    await read.xlsx.load(await writer.writeWorkbookToBuffer(book));
+    const result = read.getWorksheet('Test');
+    for (const address of ['A1', 'A2']) {
+        assert.equal(result.getCell(address).alignment.shrinkToFit, true);
+        assert.notEqual(result.getCell(address).alignment.wrapText, true);
+    }
+    assert.deepEqual([1, 2, 3, 4].map(row => result.getCell(row, 1).value), [1800, -3000, 'Included', '001800']);
+    assert.equal(result.getCell('A3').alignment.shrinkToFit, undefined);
+    assert.equal(result.getCell('A4').alignment.wrapText, true);
+    assert.equal(styles.alignment.wrapText, true);
+    assert.deepEqual(result.model.merges, ['A1:B1', 'A2:B2', 'A3:B3', 'A4:B4']);
+    assert.equal(result.getColumn(1).width, 3);
+});
+
+test('marked pages use percentage scaling that preserves breaks and fits each A4 page', async () => {
+    const deps = dependencies();
+    const writer = createWorkbookWriter(deps);
+    const model = { columnWidthsPx: [500, 300], rowHeightsPx: [600, 600, 300, 300, 200],
+        cells: [], images: [], pageBreakRows: [3, 3, 5] };
+    const book = writer.createWorkbook();
+    const sheet = writer.prepareWorksheet(book, model);
+    assert.deepEqual(sheet.rowBreaks.map(b => b.id), [2, 4]);
+    assert.equal(sheet.pageSetup.fitToPage, false);
+    const widthPt = sheet.columns.reduce((sum, c) => sum + deps.columnWidthToPixels(c.width) * 0.75, 0);
+    const pageWidthPt = (210 / 25.4 - 1) * 72;
+    const pageHeightPt = (297 / 25.4 - 0.2) * 72;
+    assert.ok(widthPt * sheet.pageSetup.scale / 100 <= pageWidthPt);
+    assert.ok(900 * sheet.pageSetup.scale / 100 <= pageHeightPt);
+    assert.ok(Number.isInteger(sheet.pageSetup.scale) && sheet.pageSetup.scale >= 10);
+    const read = new ExcelJS.Workbook();
+    await read.xlsx.load(await writer.writeWorkbookToBuffer(book));
+    assert.equal(read.worksheets[0].pageSetup.fitToPage, false);
+    assert.equal(read.worksheets[0].pageSetup.scale, sheet.pageSetup.scale);
+    const unmarked = writer.prepareWorksheet(writer.createWorkbook(), { ...model, pageBreakRows: [] });
+    assert.equal(unmarked.pageSetup.fitToPage, true);
+});
+
+test('explicit scaling and the Fit To opt-out retain their print setup', () => {
+    const root = { getAttribute: () => null, matches: () => false };
+    const model = { columnWidthsPx: [800], rowHeightsPx: [300, 300],
+        cells: [], images: [], pageBreakRows: [2] };
+    for (const options of [{ respectPageBreaks: false }, { pageSetup: { fitToPage: false, scale: 65 } }]) {
+        const config = resolveOptions(root, options).config;
+        const base = { CONFIG: config, ExcelJS, debugLog() {}, errorLog() {}, warnLog() {}, mapWithConcurrency };
+        const writer = createWorkbookWriter({ ...base, ...createLayoutMetrics(base) });
+        const sheet = writer.prepareWorksheet(writer.createWorkbook(), model);
+        assert.equal(sheet.pageSetup.fitToPage, options.respectPageBreaks === false);
+        if (options.pageSetup) assert.equal(sheet.pageSetup.scale, 65);
+    }
 });

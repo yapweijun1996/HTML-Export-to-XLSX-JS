@@ -135,6 +135,7 @@ test('precise image placement and explicit page setup serialize correctly', asyn
     const bytes = await page.evaluate(async () => {
         const result = await window.HtmlToXlsx.exportXlsx({
             root: '#export', download: false, imagePlacement: 'precise',
+            respectPageBreaks: false,
             pageSetup: { orientation: 'landscape', margins: { left: 0.7 } }
         });
         return [...new Uint8Array(result.buffer)];

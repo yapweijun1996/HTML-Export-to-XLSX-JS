@@ -220,6 +220,7 @@
     IMAGE_SPACING_PX: 4,
     BLACKLIST_SELECTORS: ["[data-xlsx-ignore]"],
     PAGE_BREAK_SELECTOR: "[data-xlsx-page-break]",
+    RESPECT_PAGE_BREAKS: true,
     IMAGE_TIMEOUT_MS: 1e4,
     IMAGE_CONCURRENCY: 4,
     PAGE_SETUP: {
@@ -269,6 +270,7 @@
     imageTimeoutMs: "IMAGE_TIMEOUT_MS",
     imageConcurrency: "IMAGE_CONCURRENCY",
     pageBreakSelector: "PAGE_BREAK_SELECTOR",
+    respectPageBreaks: "RESPECT_PAGE_BREAKS",
     exclude: "BLACKLIST_SELECTORS",
     debug: "DEBUG",
     sheetName: "SHEET_NAME"
@@ -310,6 +312,7 @@
       }
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError("imageConcurrency must be an integer");
+    if (typeof config.RESPECT_PAGE_BREAKS !== "boolean") throw new TypeError("respectPageBreaks must be a boolean");
     if (!["alignment", "precise"].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError("Invalid imagePlacement");
     if (!["inline", "block", "center", "left", "right", "precise"].includes(config.IMAGE_ALIGNMENT)) throw new RangeError("Invalid imageAlignment");
     config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== void 0;
@@ -873,6 +876,41 @@
       const sizes = visibleTextNodes(cell).map((node) => parseFloat(getElementStyle(node.parentElement).fontSize) || 0);
       return sizes.length ? sizes.reduce((maximum, size) => Math.max(maximum, size), 0) : parseFloat(cellStyle.fontSize) || 0;
     };
+    const uniformTextProperty = (cell, cs, property) => {
+      const values = visibleTextNodes(cell).map((node) => getElementStyle(node.parentElement)[property]);
+      return values.length && values.every((value) => value === values[0]) ? values[0] : cs[property];
+    };
+    const decorationCache = /* @__PURE__ */ new WeakMap();
+    const textDecorations = (element) => {
+      if (!element) return { underline: false, strike: false };
+      if (decorationCache.has(element)) return decorationCache.get(element);
+      const cs = getElementStyle(element);
+      const stopsPropagation = element.matches("td, th, table") || /^(inline-block|inline-table|inline-flex|inline-grid)$/.test(cs.display) || cs.cssFloat && cs.cssFloat !== "none" || /^(absolute|fixed)$/.test(cs.position);
+      const inherited = textDecorations(stopsPropagation ? null : element.parentElement);
+      const lines = cs.textDecorationLine || cs.textDecoration || "";
+      const result = {
+        underline: inherited.underline || /\bunderline\b/.test(lines),
+        strike: inherited.strike || /\bline-through\b/.test(lines)
+      };
+      decorationCache.set(element, result);
+      return result;
+    };
+    const isSingleLineText = (cell, textValue) => {
+      if (!textValue?.trim() || textValue.includes("\n")) return false;
+      let top = -Infinity, bottom = Infinity, found = false;
+      for (const node of visibleTextNodes(cell)) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          top = Math.max(top, rect.top);
+          bottom = Math.min(bottom, rect.bottom);
+          if (bottom <= top) return false;
+          found = true;
+        }
+      }
+      return found;
+    };
     const backgroundCaches = /* @__PURE__ */ new WeakMap();
     const extractBackground = (element, root) => {
       if (!element) return null;
@@ -884,8 +922,10 @@
       cache.set(element, color);
       return color;
     };
+    const fontCache = /* @__PURE__ */ new WeakMap();
     const extractFont = (cell, cs) => {
-      const families = (cs.fontFamily || "").split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
+      if (fontCache.has(cell)) return fontCache.get(cell);
+      const families = (uniformTextProperty(cell, cs, "fontFamily") || "").split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
       const name = families[0] || "Arial";
       const sizePx = resolveFontSizePx(cell, cs);
       const weight = normalizeFontWeight(cs.fontWeight);
@@ -899,10 +939,13 @@
         name,
         size: excelFontSize,
         bold,
-        italic: cs.fontStyle === "italic"
+        italic: /^(italic|oblique)\b/.test(uniformTextProperty(cell, cs, "fontStyle") || "")
       };
-      const color = colorToARGB(cs.color);
+      const color = colorToARGB(uniformTextProperty(cell, cs, "color"));
       if (color) font.color = { argb: color };
+      const decorations = visibleTextNodes(cell).map((node) => textDecorations(node.parentElement));
+      if (decorations.length && decorations.every((value) => value.underline)) font.underline = true;
+      if (decorations.length && decorations.every((value) => value.strike)) font.strike = true;
       if (CONFIG.DEBUG && sizePx > 0) {
         debugLog("Font extraction", {
           element: cell?.tagName || "unknown",
@@ -913,6 +956,7 @@
           bold
         });
       }
+      fontCache.set(cell, font);
       return font;
     };
     const parseCssPixelValue = (value) => {
@@ -1039,12 +1083,15 @@
       const attrVertical = normalize(cell.getAttribute("valign") || cell.vAlign);
       const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || void 0;
       const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || void 0;
-      const wrapText = cs.whiteSpace !== "nowrap" || textValue && textValue.includes("\n");
+      const font = extractFont(cell, cs);
+      const singleLineCaption = (font.bold || font.underline) && isSingleLineText(cell, textValue);
+      const wrapText = singleLineCaption ? false : cs.whiteSpace !== "nowrap" || Boolean(textValue?.includes("\n"));
       const alignment = {
         horizontal,
         vertical,
         wrapText
       };
+      if (singleLineCaption) alignment.shrinkToFit = true;
       const padding = computeEffectiveHorizontalPadding(cell, cs);
       const extraLeft = Math.max(0, padding.left - DEFAULT_EXCEL_PADDING_PX);
       const extraRight = Math.max(0, padding.right - DEFAULT_EXCEL_PADDING_PX);
@@ -1818,7 +1865,43 @@
 
   // src/images.js
   function createImages(dependencies) {
-    const { CONFIG, IMAGE_SCALE, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+    const { CONFIG, IMAGE_SCALE, columnWidthToPixels, debugLog, errorLog, isFiniteNumber, snapToPrecision, toPositiveNumber, warnLog } = dependencies;
+    const imageIds = /* @__PURE__ */ new WeakMap();
+    const getImageId = (workbook, job) => {
+      let formats = imageIds.get(workbook);
+      if (!formats) imageIds.set(workbook, formats = /* @__PURE__ */ new Map());
+      let content = formats.get(job.extension);
+      if (!content) formats.set(job.extension, content = /* @__PURE__ */ new Map());
+      if (!content.has(job.base64)) {
+        content.set(job.base64, workbook.addImage({ base64: job.base64, extension: job.extension }));
+      }
+      return content.get(job.base64);
+    };
+    const getImageRange = (worksheet, tl, ext) => {
+      const endMarker = (coordinate, sizePx, isColumn) => {
+        let index = Math.floor(coordinate);
+        const cell = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+        const startUnits = isColumn ? cell.isCustomWidth ? Math.floor(cell.width * 1e4) : 64e4 : cell.height ? Math.floor(cell.height * 1e4) : 18e4;
+        let offset = Math.floor((coordinate - index) * startUnits) + Math.round(sizePx * 9525);
+        const limit = isColumn ? 16383 : 1048575;
+        for (; ; ) {
+          const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+          const span = isColumn ? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525 : Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+          if (offset < span) return { index, offset };
+          if (index >= limit) throw new RangeError("Image extends beyond the worksheet boundary");
+          offset -= span;
+          index++;
+        }
+      };
+      const col = endMarker(tl.col, ext.width, true);
+      const row = endMarker(tl.row, ext.height, false);
+      return { tl, br: {
+        nativeCol: col.index,
+        nativeColOff: col.offset,
+        nativeRow: row.index,
+        nativeRowOff: row.offset
+      }, editAs: "oneCell" };
+    };
     const ensureImageLoaded = (img) => {
       if (img.complete) {
         if (img.naturalWidth && img.naturalHeight) return Promise.resolve();
@@ -2053,15 +2136,12 @@
         col: coordinateAt(metrics.columnEdges, safeLeft, metrics.startColIndex),
         row: coordinateAt(metrics.rowEdges, safeTop, metrics.startRowIndex)
       };
-      const imgId = workbook.addImage({
-        base64: job.base64,
-        extension: job.extension
-      });
       const ext = {
         width: widthPx,
         height: heightPx
       };
-      worksheet.addImage(imgId, { tl, ext, editAs: "oneCell" });
+      const range = getImageRange(worksheet, tl, ext);
+      worksheet.addImage(getImageId(workbook, job), range);
       debugLog("Placed image using alignment flow", job.element?.src || "(unknown src)", {
         tl,
         ext,
@@ -2172,10 +2252,6 @@
       const htmlRowEdges = layoutModel.rowEdges;
       for (const job of resolvedJobs) {
         if (!job.base64) continue;
-        const imgId = workbook.addImage({
-          base64: job.base64,
-          extension: job.extension
-        });
         const parentCell = job.parentCell;
         if (!parentCell?.sheetPosition) continue;
         const tl = {
@@ -2187,7 +2263,8 @@
           width: job.width * finalImageScale,
           height: job.height * finalImageScale
         };
-        worksheet.addImage(imgId, { tl, ext, editAs: "oneCell" });
+        const range = getImageRange(worksheet, tl, ext);
+        worksheet.addImage(getImageId(workbook, job), range);
         debugLog("Placed image using direct pixel mapping", job.element?.src || "(unknown src)", {
           tl,
           ext,
@@ -2256,7 +2333,7 @@
 
   // src/workbook.js
   function createWorkbookWriter(dependencies) {
-    const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
+    const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
     const applyColumnWidths = (worksheet, columnWidthsPx) => {
       worksheet.columns = columnWidthsPx.map((px) => ({ width: pxToColumnWidth(px, EXPORT_SCALE) }));
     };
@@ -2285,6 +2362,52 @@
         seen.add(rowId);
       }
       worksheet.rowBreaks = existingBreaks;
+    };
+    const fitMarkedPagesForPrint = (worksheet) => {
+      const setup = worksheet.pageSetup;
+      if (!CONFIG.RESPECT_PAGE_BREAKS || !worksheet.rowBreaks?.length || !setup.fitToPage) return;
+      const papers = {
+        1: [215.9, 279.4],
+        5: [215.9, 355.6],
+        7: [184.15, 266.7],
+        8: [297, 420],
+        9: [210, 297],
+        11: [148, 210],
+        13: [182, 257]
+      };
+      const paper = papers[setup.paperSize ?? 1];
+      setup.fitToPage = false;
+      if (!paper) {
+        warnLog(
+          "Automatic print scaling is unavailable for this paper size; set pageSetup.scale explicitly",
+          { code: "PRINT_SCALE_UNAVAILABLE" }
+        );
+        return;
+      }
+      const [widthMm, heightMm] = setup.orientation === "landscape" ? [paper[1], paper[0]] : paper;
+      const margins = setup.margins;
+      const widthPt = (widthMm / 25.4 - margins.left - margins.right) * 72;
+      const heightPt = (heightMm / 25.4 - margins.top - margins.bottom) * 72;
+      const sheetWidthPt = worksheet.columns.reduce((sum, col) => sum + columnWidthToPixels(col.width) * 72 / 96, 0);
+      const boundaries = new Set(worksheet.rowBreaks.map((brk) => brk.id));
+      let pageHeightPt = 0, tallestPagePt = 0;
+      for (let row = 1; row <= worksheet.rowCount; row++) {
+        pageHeightPt += worksheet.getRow(row).height ?? worksheet.properties.defaultRowHeight ?? 15;
+        if (boundaries.has(row) || row === worksheet.rowCount) {
+          tallestPagePt = Math.max(tallestPagePt, pageHeightPt);
+          pageHeightPt = 0;
+        }
+      }
+      const scale = Math.floor(100 * Math.min(1, widthPt / sheetWidthPt, heightPt / tallestPagePt));
+      if (!Number.isFinite(scale) || scale < 10) {
+        warnLog(
+          "Marked pages cannot fit the printable area within Excel's minimum 10% scale",
+          { code: "PRINT_SCALE_TOO_SMALL" }
+        );
+        setup.scale = 10;
+        return;
+      }
+      setup.scale = scale;
     };
     const writeCellsToSheet = (worksheet, model) => {
       const occupancy = /* @__PURE__ */ new Set();
@@ -2318,6 +2441,9 @@
         if (cell.styles.border) targetCell.border = cell.styles.border;
         if (cell.styles.fill) targetCell.fill = cell.styles.fill;
         if (cell.styles.numFmt) targetCell.numFmt = cell.styles.numFmt;
+        if (typeof cell.value === "number" && cell.styles.numFmt) {
+          targetCell.alignment = { ...targetCell.alignment, wrapText: false, shrinkToFit: true };
+        }
         for (let r = rowStart; r <= mergeRowEnd; r++) {
           for (let c = colStart; c <= mergeColEnd; c++) {
             occupancy.add(`${r},${c}`);
@@ -2419,6 +2545,7 @@
       writeCellsToSheet(worksheet, layoutModel);
       applyDeferredBorders(worksheet, layoutModel);
       applyPageBreaks(worksheet, layoutModel);
+      fitMarkedPagesForPrint(worksheet);
       return worksheet;
     };
     const processAndPlaceImages = async (workbook, worksheet, layoutModel) => {
@@ -2625,7 +2752,7 @@
       currency: root.getAttribute("data-excel-currency") || "USD",
       locale: root.getAttribute("data-excel-locale") || "en-US",
       exclude: ["[data-xlsx-ignore]", "table#mainapproval", "table#ext_id", "table#myMenu"],
-      pageBreakSelector: ".pagebreak_bf_processed"
+      pageBreakSelector: "[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf"
     };
     window.exportPrintFormToXlsx = () => api.exportXlsx(options);
     const button = documentRoot.querySelector(".html_to_excel_btn");

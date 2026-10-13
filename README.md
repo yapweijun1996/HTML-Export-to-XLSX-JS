@@ -73,7 +73,8 @@ outcome. Loading the script after DOMContentLoaded is supported.
 | exceljs | globalThis.ExcelJS | Optional explicit dependency |
 | exclude | ['[data-xlsx-ignore]'] | Omit elements and descendants |
 | pageBreakSelector | [data-xlsx-page-break] | Markers mapped to Excel manual breaks |
-| pageSetup | A4 portrait, fit one page wide | ExcelJS setup overrides; margins merge |
+| respectPageBreaks | true | Convert Fit To to percentage scaling for marked pages |
+| pageSetup | A4 portrait, fit one page wide | ExcelJS setup overrides; margins merge; marked pages use percentage scaling |
 | edgeTolerancePx | 2 | Coordinate clustering tolerance |
 | exportScale, rowScale | 1 | Export and row size scaling |
 | fontScale | 0.9 | Font size scaling |
@@ -140,6 +141,11 @@ complete. Image load waits and processing concurrency are bounded. Images beside
 nested tables are included; images with zero rendered width or height are omitted.
 Fetch fallback uses the browser-selected currentSrc (including picture/srcset)
 and rasterizes the fetched image to PNG, including SVG and WebP sources.
+Identical raster bytes and formats share one workbook media entry, including across
+different cells; each visible placement remains a separate drawing. Different
+raster sizes, pixels or formats are not combined, and reuse is scoped to a workbook.
+Images use valid two-cell drawing anchors with `editAs="oneCell"` to preserve
+fixed image sizes and avoid ExcelJS 4.4's invalid attribute on one-cell anchors.
 
 Warnings include a specific code and, when available, source, error and count.
 Source URLs omit credentials, query parameters and fragments; inline data is not
@@ -156,6 +162,13 @@ Filtered text retains text case transformations and whitespace modes. Excluded
 content does not contribute font size, weight or descendant padding. Backgrounds
 resolve from the nearest visible ancestor, and RTL start/end alignment respects
 the element's direction. A table used directly as root retains its background and borders.
+Uniform inline font families, colors and italics are read from visible text rather
+than only the outer cell. Underline and strike-through decorations include inline
+ancestors. Mixed inline properties retain the cell-level fallback; rich-text runs
+are not generated. Hidden content and nested child tables do not influence these
+font properties. Bold or underlined captions that occupy one rendered line use
+Shrink to Fit within the original grid. Explicit line breaks and naturally wrapped
+captions retain text wrapping.
 
 Alignment-mode images use the merged cell's actual column and row grid for left,
 center and right positioning, without fixed pixel compensation. Inline and stacked
@@ -179,6 +192,22 @@ ERP-specific defaults belong to [adapters/globe3.js](adapters/globe3.js).
 The bundled adapter activates only when .exp_to_excel_button_content exists.
 It preserves .html_to_excel_btn and window.exportPrintFormToXlsx(), legacy
 exclusions and .pagebreak_bf_processed markers.
+It also recognizes zero-height .pagebreak_bf markers emitted by the current ERP
+paginator and explicit [data-xlsx-page-break] markers.
+
+Excel can ignore manual page breaks in Fit To mode. When markers are present and
+respectPageBreaks is true, the exporter calculates a percentage scale from the
+worksheet width, tallest marked page, paper size and margins. Each marked page
+then starts on a separate printed page. Forms without markers keep Fit To mode.
+Set respectPageBreaks: false to keep an explicit Fit To choice, or set
+pageSetup.fitToPage: false with pageSetup.scale to control the percentage yourself.
+Automatic percentage scaling supports Letter, Legal, Executive, A3, A4, A5 and
+JIS B5. Unsupported paper sizes and pages needing less than Excel's minimum 10%
+scale emit a warning and require explicit print settings or a smaller layout.
+
+Formatted numeric cells use Shrink to Fit instead of text wrapping, so expanded
+currency codes fit the original grid while values remain editable numbers.
+Text cells, merged regions, column widths and row heights retain their geometry.
 
 For dollar-based forms without currency metadata, the adapter retains the legacy
 USD interpretation. HKD forms should declare their currency:

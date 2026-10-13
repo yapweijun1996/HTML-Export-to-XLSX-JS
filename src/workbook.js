@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createWorkbookWriter(dependencies) {
- const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
+ const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
 	const applyColumnWidths = (worksheet, columnWidthsPx) => {
 		worksheet.columns = columnWidthsPx.map((px) => ({ width: pxToColumnWidth(px, EXPORT_SCALE) }));
 	};
@@ -33,6 +33,45 @@ export function createWorkbookWriter(dependencies) {
 			seen.add(rowId);
 		}
 		worksheet.rowBreaks = existingBreaks;
+	};
+
+	const fitMarkedPagesForPrint = (worksheet) => {
+		const setup = worksheet.pageSetup;
+		if (!CONFIG.RESPECT_PAGE_BREAKS || !worksheet.rowBreaks?.length || !setup.fitToPage) return;
+		// Excel's Fit To mode ignores manual breaks. Use percentage scaling for marked pages.
+		// Dimensions in millimeters: Letter, Legal, Executive, A3, A4, A5 and JIS B5.
+		const papers = { 1: [215.9, 279.4], 5: [215.9, 355.6], 7: [184.15, 266.7],
+			8: [297, 420], 9: [210, 297], 11: [148, 210], 13: [182, 257] };
+		const paper = papers[setup.paperSize ?? 1];
+		setup.fitToPage = false;
+		if (!paper) {
+			warnLog('Automatic print scaling is unavailable for this paper size; set pageSetup.scale explicitly',
+				{ code: 'PRINT_SCALE_UNAVAILABLE' });
+			return;
+		}
+		const [widthMm, heightMm] = setup.orientation === 'landscape' ? [paper[1], paper[0]] : paper;
+		const margins = setup.margins;
+		const widthPt = (widthMm / 25.4 - margins.left - margins.right) * 72;
+		const heightPt = (heightMm / 25.4 - margins.top - margins.bottom) * 72;
+		const sheetWidthPt = worksheet.columns.reduce((sum, col) =>
+			sum + columnWidthToPixels(col.width) * 72 / 96, 0);
+		const boundaries = new Set(worksheet.rowBreaks.map(brk => brk.id));
+		let pageHeightPt = 0, tallestPagePt = 0;
+		for (let row = 1; row <= worksheet.rowCount; row++) {
+			pageHeightPt += worksheet.getRow(row).height ?? worksheet.properties.defaultRowHeight ?? 15;
+			if (boundaries.has(row) || row === worksheet.rowCount) {
+				tallestPagePt = Math.max(tallestPagePt, pageHeightPt);
+				pageHeightPt = 0;
+			}
+		}
+		const scale = Math.floor(100 * Math.min(1, widthPt / sheetWidthPt, heightPt / tallestPagePt));
+		if (!Number.isFinite(scale) || scale < 10) {
+			warnLog('Marked pages cannot fit the printable area within Excel\'s minimum 10% scale',
+				{ code: 'PRINT_SCALE_TOO_SMALL' });
+			setup.scale = 10;
+			return;
+		}
+		setup.scale = scale;
 	};
 
 	const writeCellsToSheet = (worksheet, model) => {
@@ -71,6 +110,10 @@ export function createWorkbookWriter(dependencies) {
 			if (cell.styles.border) targetCell.border = cell.styles.border;
 			if (cell.styles.fill) targetCell.fill = cell.styles.fill;
 			if (cell.styles.numFmt) targetCell.numFmt = cell.styles.numFmt;
+			if (typeof cell.value === 'number' && cell.styles.numFmt) {
+				// Currency codes can be wider than the HTML symbol. Keep values and the grid intact.
+				targetCell.alignment = { ...targetCell.alignment, wrapText: false, shrinkToFit: true };
+			}
 
 			for (let r = rowStart; r <= mergeRowEnd; r++) {
 				for (let c = colStart; c <= mergeColEnd; c++) {
@@ -181,6 +224,7 @@ export function createWorkbookWriter(dependencies) {
 		writeCellsToSheet(worksheet, layoutModel);
 		applyDeferredBorders(worksheet, layoutModel);
 		applyPageBreaks(worksheet, layoutModel);
+		fitMarkedPagesForPrint(worksheet);
 		return worksheet;
 	};
 
