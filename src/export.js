@@ -43,8 +43,16 @@ export async function exportXlsx(options = {}) {
     if (!ExcelJS?.Workbook) throw new Error('Load ExcelJS separately or supply options.exceljs');
     const { config: CONFIG, currency, locale } = resolveOptions(root, options);
     const warnings = [];
-    const warnLog = message => {
-        const warning = { code: 'EXPORT_WARNING', message: String(message) };
+    const warnLog = (message, context = {}) => {
+        const warning = { code: 'EXPORT_WARNING', ...context, message: String(message) };
+        if (warning.error instanceof Error) warning.error = warning.error.message;
+        if (warning.source) {
+            // Keep diagnostics useful without copying signed URL parameters or inline image data.
+            try {
+                const url = new URL(warning.source, document.baseURI);
+                warning.source = ['http:', 'https:'].includes(url.protocol) ? url.origin + url.pathname : url.protocol;
+            } catch { warning.source = '(invalid image URL)'; }
+        }
         warnings.push(warning);
         options.onWarning?.(warning);
     };
@@ -56,31 +64,33 @@ export async function exportXlsx(options = {}) {
         mapWithConcurrency
     };
     Object.assign(dependencies, createLayoutMetrics(dependencies));
-    Object.assign(dependencies, createStyles(dependencies));
     Object.assign(dependencies, createDom(dependencies));
+    Object.assign(dependencies, createStyles(dependencies));
     Object.assign(dependencies, createLayout(dependencies));
     Object.assign(dependencies, createImages(dependencies));
     Object.assign(dependencies, createWorkbookWriter(dependencies));
     // Measure only after images and fonts settle; neither wait can block indefinitely.
     let fontTimer;
     if (document.fonts?.ready) {
-        await Promise.race([
-            document.fonts.ready,
-            new Promise(resolve => { fontTimer = setTimeout(() => {
-                warnLog('Font readiness timed out; using available font metrics');
-                resolve();
-            }, CONFIG.IMAGE_TIMEOUT_MS); })
-        ]);
-        clearTimeout(fontTimer);
+        let timedOut;
+        try {
+            timedOut = await Promise.race([
+                document.fonts.ready.then(() => false),
+                new Promise(resolve => { fontTimer = setTimeout(() => resolve(true), CONFIG.IMAGE_TIMEOUT_MS); })
+            ]);
+        } finally { clearTimeout(fontTimer); }
+        if (timedOut) warnLog('Font readiness timed out; using available font metrics', { code: 'FONT_TIMEOUT' });
     }
     await mapWithConcurrency(Array.from(root.querySelectorAll('img')), CONFIG.IMAGE_CONCURRENCY,
         async image => {
-            if (dependencies.isElementBlacklisted(image, root)) return;
+            if (dependencies.isElementExcluded(image, root)) return;
             try { await dependencies.ensureImageLoaded(image); }
-            catch { warnLog('An image did not load before layout measurement'); }
+            catch (error) { warnLog('An image did not load before layout measurement', {
+                code: 'IMAGE_PRELOAD_FAILED', source: image.currentSrc || image.src, error
+            }); }
         });
     const layoutModel = dependencies.buildLayoutModel(root);
-    if (!layoutModel.cells.length) throw new Error('No visible table cells to export');
+    if (!layoutModel.cells.length && !layoutModel.images.length) throw new Error('No visible table cells to export');
     const workbook = dependencies.createWorkbook();
     const worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
     await dependencies.processAndPlaceImages(workbook, worksheet, layoutModel);

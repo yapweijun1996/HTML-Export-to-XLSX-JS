@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createLayout(dependencies) {
-  const { CONFIG, collectDomSnapshot, colorToARGB, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, detectCurrency, extractAlignment, extractBorders, extractFont, getCellText, parseCellValue, isElementBlacklisted, normalizeEdges, resolveSize, snapToPrecision } = dependencies;
+  const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractBackground, getCellText, parseCellValue, isElementExcluded, snapToPrecision } = dependencies;
 	const buildLayoutModel = (root) => {
 		const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root);
 
@@ -25,7 +25,7 @@ export function createLayout(dependencies) {
 			const rowEndIndex = rowEdges.findIndex((edge) => Math.abs(edge - bottom) <= CONFIG.EDGE_TOLERANCE_PX);
 
 			if (colStartIndex === -1 || colEndIndex === -1 || rowStartIndex === -1 || rowEndIndex === -1) {
-				dependencies.warnLog('A cell has unmatched grid edges');
+				dependencies.warnLog('A cell has unmatched grid edges', { code: 'GRID_EDGE_MISMATCH' });
 				return null;
 			}
 
@@ -76,7 +76,6 @@ export function createLayout(dependencies) {
 		const cells = [];
 		const images = [];
 		const deferredBorders = [];
-		const tableBackgroundRegions = [];
 
 		for (const cell of leafCells) {
 			const descriptor = describeCell(cell);
@@ -94,12 +93,12 @@ export function createLayout(dependencies) {
 				rowEndIndex
 			} = descriptor;
 
-			const textValue = getCellText(cell);
+			const textValue = getCellText(cell, root);
 			const cs = window.getComputedStyle(cell);
 			const font = extractFont(cell, cs);
 			const alignment = extractAlignment(cell, cs, textValue);
 			const borders = extractBorders(cs, cell);
-			const fillColor = colorToARGB(cs.backgroundColor);
+			const fillColor = extractBackground(cell, root);
 			const currencyMatch = parseCellValue(textValue, cell);
 			const exportedValue = currencyMatch.value;
 
@@ -127,45 +126,6 @@ export function createLayout(dependencies) {
 				sheetPosition: null
 			};
 
-			const imgList = Array.from(cell.querySelectorAll('img')).filter(
-			(img) => !isElementBlacklisted(img, root)
-			);
-			for (const img of imgList) {
-				const imgRect = img.getBoundingClientRect();
-				const scrollY = window.scrollY || window.pageYOffset || 0;
-				const scrollX = window.scrollX || window.pageXOffset || 0;
-				const rootLeft = snapToPrecision(root.getBoundingClientRect().left + scrollX);
-				const rootTop = snapToPrecision(root.getBoundingClientRect().top + scrollY);
-
-				const imgWidth = resolveSize(imgRect.width, img.width, img.naturalWidth);
-				const imgHeight = resolveSize(imgRect.height, img.height, img.naturalHeight);
-				if (!imgWidth || !imgHeight) continue;
-				const job = {
-					element: img,
-					width: imgWidth,
-					height: imgHeight,
-					parentCell: cellModel,
-					left: snapToPrecision(imgRect.left + scrollX - rootLeft),
-					top: snapToPrecision(imgRect.top + scrollY - rootTop),
-					offsetWithinCell: {
-						left: snapToPrecision(imgRect.left - rect.left),
-						top: snapToPrecision(imgRect.top - rect.top)
-					}
-				};
-				cellModel.images.push(job);
-				images.push(job);
-				debugLog('Queued image job', img?.src || '(unknown src)', {
-					width: job.width,
-					height: job.height,
-					offsetWithinCell: job.offsetWithinCell,
-					parentCellBounds: {
-						colStart: cellModel.colStart,
-						colEnd: cellModel.colEnd,
-						rowStart: cellModel.rowStart,
-						rowEnd: cellModel.rowEnd
-					}
-				});
-			}
 
 			cells.push(cellModel);
 		}
@@ -186,18 +146,14 @@ export function createLayout(dependencies) {
 				const colEndIndex = Math.max(colStartIndex + 1, colEndIndexRaw);
 				const rowEndIndex = Math.max(rowStartIndex + 1, rowEndIndexRaw);
 
-				const duplicate = cells.some(
-				(existing) => existing.colStart === colStartIndex && existing.rowStart === rowStartIndex
-				);
-				if (duplicate) continue;
 
 				const referenceElement = fragment.sourceElement || fragment.cell;
 				const cs = window.getComputedStyle(referenceElement);
 				const font = extractFont(referenceElement, cs);
 				const alignment = extractAlignment(referenceElement, cs, fragment.text);
-				const fillColor = colorToARGB(cs.backgroundColor);
-				const currencyMatch = detectCurrency(fragment.text);
-				const exportedValue = currencyMatch ? currencyMatch.value : fragment.text;
+				const fillColor = extractBackground(referenceElement, root);
+				const currencyMatch = parseCellValue(fragment.text, referenceElement);
+				const exportedValue = currencyMatch.value;
 
 				cells.push({
 					element: fragment.cell,
@@ -223,6 +179,32 @@ export function createLayout(dependencies) {
 					sheetPosition: null
 				});
 			}
+		}
+
+		// Image ownership is independent of text fragments: nested table containers still own images.
+		const imageOwners = new Map();
+		for (const img of root.querySelectorAll('img')) {
+			if (isElementExcluded(img, root)) continue;
+			const rect = img.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) continue;
+			const owner = img.closest('td, th');
+			if (!owner || !root.contains(owner)) continue;
+			let parentCell = imageOwners.get(owner);
+			if (!parentCell) {
+				const descriptor = getDescriptor(owner);
+				if (!descriptor) continue;
+				parentCell = {
+					element: owner, bounds: { left: descriptor.left, top: descriptor.top, width: descriptor.width, height: descriptor.height },
+					colStart: descriptor.colStartIndex, colEnd: Math.max(descriptor.colStartIndex + 1, descriptor.colEndIndex),
+					rowStart: descriptor.rowStartIndex, rowEnd: Math.max(descriptor.rowStartIndex + 1, descriptor.rowEndIndex),
+					styles: { alignment: extractAlignment(owner, window.getComputedStyle(owner), '') },
+					sheetPosition: { colStart: descriptor.colStartIndex + 1, rowStart: descriptor.rowStartIndex + 1 }
+				};
+				imageOwners.set(owner, parentCell);
+			}
+			images.push({ element: img, parentCell, width: rect.width, height: rect.height,
+				left: snapToPrecision(rect.left + window.scrollX - rootLeft),
+				top: snapToPrecision(rect.top + window.scrollY - rootTop) });
 		}
 
 		const computedStyleCache = new WeakMap();
@@ -336,26 +318,6 @@ export function createLayout(dependencies) {
 			}
 		};
 
-		const applyBackgroundRegions = (cells, regions) => {
-			if (!Array.isArray(regions) || !regions.length) return;
-			for (const region of regions) {
-				if (!region || !region.fill) continue;
-				const { rowStart, rowEnd, colStart, colEnd, fill } = region;
-				for (const cell of cells) {
-					if (!cell) continue;
-					if (cell.rowStart >= rowEnd || cell.rowEnd <= rowStart) continue;
-					if (cell.colStart >= colEnd || cell.colEnd <= colStart) continue;
-					cell.styles = cell.styles || {};
-					if (!cell.styles.fill) {
-						cell.styles.fill = {
-							type: fill.type,
-							pattern: fill.pattern,
-							fgColor: fill.fgColor ? { ...fill.fgColor } : undefined
-						};
-					}
-				}
-			}
-		};
 
 		const applyOuterElementBorders = (descriptor, borders) => {
 			if (!descriptor || !borders) return;
@@ -458,7 +420,7 @@ export function createLayout(dependencies) {
 		}
 
 		for (const tableElement of tableElements) {
-			if (!tableElement || tableElement === root) continue;
+			if (!tableElement) continue;
 			const descriptor = getDescriptor(tableElement);
 			if (!descriptor) continue;
 			const csTable = window.getComputedStyle(tableElement);
@@ -466,20 +428,10 @@ export function createLayout(dependencies) {
 			if (borders) {
 				applyOuterElementBorders(descriptor, borders);
 			}
-			const bgColor = colorToARGB(csTable.backgroundColor);
-			if (bgColor) {
-				tableBackgroundRegions.push({
-					rowStart: descriptor.rowStartIndex,
-					rowEnd: Math.max(descriptor.rowStartIndex + 1, descriptor.rowEndIndex),
-					colStart: descriptor.colStartIndex,
-					colEnd: Math.max(descriptor.colStartIndex + 1, descriptor.colEndIndex),
-					fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } }
-				});
-			}
+
 		}
 
 		propagateSharedBorders(cells);
-		applyBackgroundRegions(cells, tableBackgroundRegions);
 
 		const columnWidthsPx = [];
 		for (let i = 0; i < columnEdges.length - 1; i++) {

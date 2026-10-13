@@ -197,13 +197,14 @@ export function createWorkbookWriter(dependencies) {
 		if (failedImages.length) {
 			failedImages.forEach((item) => {
 				warnLog('Image skipped (no base64)', {
-					src: item.element?.src || '(unknown src)',
+					code: 'IMAGE_SKIPPED',
+					source: item.element?.currentSrc || item.element?.src || '(unknown src)',
 					width: item.width,
 					height: item.height,
 					error: item.error ? item.error.message || String(item.error) : '(no error message)'
 				});
 			});
-			warnLog('Images could not be embedded', failedImages.map((f) => f.element?.src || '(unknown src)'));
+			warnLog('Images could not be embedded', { code: 'IMAGE_EMBED_FAILED', count: failedImages.length });
 		}
 	};
 
@@ -221,7 +222,7 @@ export function createWorkbookWriter(dependencies) {
 			: [];
 			debugLog('Workbook media summary', { mediaCount, worksheetSummaries });
 		} catch (err) {
-			warnLog('Failed to inspect workbook model', err);
+			warnLog('Failed to inspect workbook model', { code: 'WORKBOOK_INSPECTION_FAILED', error: err });
 		}
 	};
 
@@ -233,7 +234,7 @@ export function createWorkbookWriter(dependencies) {
 			debugLog('Workbook buffer size', buffer && (buffer.byteLength || buffer.length || 0));
 			return buffer;
 		} catch (err) {
-			errorLog('writeBuffer failed', err);
+			errorLog('writeBuffer failed', { code: 'WORKBOOK_WRITE_FAILED', error: err });
 			throw err;
 		}
 	};

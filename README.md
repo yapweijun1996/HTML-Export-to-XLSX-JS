@@ -82,11 +82,11 @@ outcome. Loading the script after DOMContentLoaded is supported.
 | imagePlacement | alignment | alignment or precise |
 | imageAlignment | inline | inline, block, center, left, right, precise |
 | imageTimeoutMs, imageConcurrency | 10000, 4 | Bounded image waits and concurrency |
-| onWarning | unset | Callback receiving { code, message } |
+| onWarning | unset | Callback receiving { code, message, source?, error?, count? } |
 | debug | false | Diagnostic logs; use non-sensitive fixtures |
 
 Unknown options and invalid explicitly typed values reject. Each export owns its
-configuration and caches; concurrent exports can use different currencies without
+configuration and DOM caches; concurrent exports can use different currencies without
 changing global settings.
 
 ### Currency and value rules
@@ -100,6 +100,10 @@ prefixes or suffixes support currencies beyond a hardcoded list. Common
 unambiguous symbols such as HK$, US$, S$, NT$, EUR's euro symbol, GBP's pound symbol
 and INR's rupee symbol are recognized. Other symbols require explicit currency
 configuration or a typed cell. Locale describes input formatting, not currency.
+RMB is an alias for CNY, while RM denotes MYR. Currency symbols can precede or
+follow the amount. Leading signs, accounting parentheses and locale-specific
+minus signs are supported, including -$1,234.56, ($1,234.56) and 1.234,56 €
+(with locale de-DE). Conflicting signs or malformed grouping remain invalid.
 
 ~~~html
 <td data-excel-type="text">00123</td>
@@ -109,17 +113,59 @@ configuration or a typed cell. Locale describes input formatting, not currency.
 ~~~
 
 The data-excel-value attribute uses the selected locale. Explicit numeric cells
-reject invalid values. Unmarked plain numeric-looking text remains text,
+reject invalid grouping (including separators in the fractional part), more than
+15 significant decimal digits, values outside the safe integer magnitude, and
+values that change when converted to a JavaScript number. Unmarked amounts that
+cannot be converted safely remain text. Trailing decimal zeros do not consume
+precision. Unmarked plain numeric-looking text remains text,
 preserving phone numbers and identifiers. Strings beginning with = remain text
 and never become formulas. This library exports displayed amounts; it does not
 calculate quotation totals or discounts.
+
+For text alongside a nested table, metadata is resolved from the text's element
+up to its containing td/th, stopping before the parent table's cell. Formatting
+nodes belonging to one declared value are exported together, so an explicit
+data-excel-value is emitted once at its first visible run. A child table or nested
+declaration separates text runs; their rectangles are never merged across the
+intervening content. Put separate numeric values in separately annotated spans:
+a numeric declaration without an explicit value that crosses those boundaries
+rejects the export. Child-table cells retain their own metadata and document defaults.
 
 ### Images, merges and warnings
 
 Images are embedded in the workbook. Same-origin or CORS-enabled images work;
 browser security restrictions cannot be bypassed. Image failures produce warnings
 while valid content continues. Inspect warnings before treating an export as
-complete. Image load waits and processing concurrency are bounded.
+complete. Image load waits and processing concurrency are bounded. Images beside
+nested tables are included; images with zero rendered width or height are omitted.
+Fetch fallback uses the browser-selected currentSrc (including picture/srcset)
+and rasterizes the fetched image to PNG, including SVG and WebP sources.
+
+Warnings include a specific code and, when available, source, error and count.
+Source URLs omit credentials, query parameters and fragments; inline data is not
+copied into warnings. IMAGE_CANVAS_FALLBACK indicates a recoverable conversion
+attempt; IMAGE_SKIPPED indicates an omitted image. If onWarning throws, the export
+rejects and a bound button is restored, including after a font-readiness timeout.
+
+Exclusion selectors apply to descendants inside cells as well as whole tables.
+Hidden text and images are omitted before value parsing and export image processing;
+visible children that explicitly restore CSS visibility are retained. Filtering
+preserves explicit line breaks without changing the source DOM. This is an export
+filter, not an authorization boundary: protected data must not be sent to the page.
+Filtered text retains text case transformations and whitespace modes. Excluded
+content does not contribute font size, weight or descendant padding. Backgrounds
+resolve from the nearest visible ancestor, and RTL start/end alignment respects
+the element's direction. A table used directly as root retains its background and borders.
+
+Alignment-mode images use the merged cell's actual column and row grid for left,
+center and right positioning, without fixed pixel compensation. Inline and stacked
+images retain their spacing. Alignment precedence is the cell's
+data-excel-image-align attribute, an explicitly supplied imageAlignment option,
+CSS text alignment, then the default inline flow. Inline images wrap by available
+width rather than a fixed image count. If a forced flow exceeds the cell's size,
+the export rejects instead of overlapping images; enlarge the HTML cell, reduce
+imageWidthScale or use precise placement. Precise mode maps the original image
+coordinates through all spanned columns and rows, without fixed pixel compensation.
 
 The grid is reconstructed from visible table geometry. Meaningful cells colliding
 at an occupied position reject the export instead of silently dropping a value.

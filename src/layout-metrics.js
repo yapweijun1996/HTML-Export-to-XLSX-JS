@@ -50,7 +50,7 @@ export function createLayoutMetrics(dependencies) {
 				const metrics = context.measureText('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
 				avgCharWidth = metrics.width / 62;
 			} catch (e) {
-				errorLog('Failed to measure avg char width, falling back to 7px', e);
+				errorLog('Failed to measure avg char width, falling back to 7px', { code: 'FONT_MEASUREMENT_FAILED', error: e });
 				avgCharWidth = 7; // Fallback on error
 			}
 			debugLog(`Measured average character width for font "${fontStyle}":`, avgCharWidth);

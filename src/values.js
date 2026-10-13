@@ -14,9 +14,38 @@ export function validateCurrency(value) {
     return code;
 }
 
+// Compare decimal values independently of formatting and exponent notation.
+// The export contract limits numeric cells to 15 significant decimal digits.
+function decimalKey(value) {
+    const match = String(value).match(/^([+-]?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
+    if (!match) return null;
+    let digits = (match[2] + (match[3] || '')).replace(/^0+/, '');
+    if (!digits) return '0';
+    let exponent = Number(match[4] || 0) - (match[3] || '').length;
+    const trimmed = digits.replace(/0+$/, '');
+    exponent += digits.length - trimmed.length;
+    digits = trimmed;
+    if (digits.length > 15) return null;
+    return (match[1] === '-' ? '-' : '') + digits + 'e' + exponent;
+}
+
+const minusSigns = new Map();
+function normalizeSigns(text, locale) {
+    if (!minusSigns.has(locale)) {
+        const minus = new Intl.NumberFormat(locale).formatToParts(-1).find(part => part.type === 'minusSign')?.value || '-';
+        if (minusSigns.size >= 32) minusSigns.delete(minusSigns.keys().next().value);
+        minusSigns.set(locale, minus);
+    }
+    const minus = minusSigns.get(locale);
+    return minus && minus !== '-' ? text.split(minus).join('-') : text;
+}
+
 export function parseLocalizedNumber(value, locale = 'en-US') {
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    let text = String(value ?? '').trim().replace(/[\u061c\u200e\u200f]/g, '');
+    if (typeof value === 'number') {
+        return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER
+            && decimalKey(value) !== null ? value : null;
+    }
+    let text = normalizeSigns(String(value ?? '').trim().replace(/[\u061c\u200e\u200f]/g, ''), locale);
     if (!text) return null;
     const negative = /^\(.*\)$/.test(text);
     if (negative) text = text.slice(1, -1);
@@ -30,6 +59,8 @@ export function parseLocalizedNumber(value, locale = 'en-US') {
     }
     const normalizedGroup = group?.replace(/\s/g, ' ');
     text = text.replace(/\s/g, ' ');
+    const decimalParts = text.split(decimal);
+    if (decimalParts.length > 2 || (decimalParts.length === 2 && !/^\d+$/.test(decimalParts[1]))) return null;
     if (normalizedGroup && normalizedGroup !== ' ' && text.includes(normalizedGroup)) {
         // Reject malformed grouping instead of turning arbitrary text into a plausible number.
         const groupedInteger = text.replace(/^[+-]/, '').split(decimal)[0];
@@ -51,13 +82,15 @@ export function parseLocalizedNumber(value, locale = 'en-US') {
     if (decimal !== '.') text = text.split(decimal).join('.');
     if (!/^[+-]?\d+(?:\.\d+)?$/.test(text) || (negative && /^[+-]/.test(text))) return null;
     const number = Number(text);
+    const key = decimalKey(text);
     return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER
+        && key !== null && key === decimalKey(number)
         ? (negative ? -number : number) : null;
 }
 
 const explicitSymbols = [
     ['HK$', 'HKD'], ['US$', 'USD'], ['S$', 'SGD'], ['NT$', 'TWD'],
-    ['RM', 'MYR'], ['RMB', 'CNY'], ['JP¥', 'JPY'], ['€', 'EUR'],
+    ['RMB', 'CNY'], ['RM', 'MYR'], ['JP¥', 'JPY'], ['€', 'EUR'],
     ['£', 'GBP'], ['₹', 'INR']
 ];
 
@@ -70,22 +103,31 @@ export function currencyFormat(currency, locale = 'en-US') {
 }
 
 export function detectCurrency(rawText, options = {}) {
-    let text = String(rawText ?? '').trim();
+    const locale = options.locale || 'en-US';
+    let text = normalizeSigns(String(rawText ?? '').trim().replace(/[\u061c\u200e\u200f]/g, ''), locale);
     if (!text) return null;
+    const accounting = /^\(.*\)$/.test(text);
+    if (accounting) text = text.slice(1, -1).trim();
+    const sign = text.match(/^[+-]/)?.[0] || '';
+    if (accounting && sign) return null;
+    if (sign) text = text.slice(1).trim();
     let code = null;
-    const prefix = text.match(/^([A-Za-z]{3})\s*(?=[\d(+-])/);
-    const suffix = text.match(/\s*([A-Za-z]{3})$/);
-    const explicit = prefix || suffix;
-    if (explicit) {
-        try { code = validateCurrency(explicit[1]); } catch { return null; }
-        text = prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length);
-    } else {
-        for (const [symbol, currency] of explicitSymbols) {
-            if (text.startsWith(symbol)) {
-                code = currency;
-                text = text.slice(symbol.length).trim();
-                break;
-            }
+    const takeSymbol = symbol => {
+        if (text.startsWith(symbol)) { text = text.slice(symbol.length).trim(); return true; }
+        if (text.endsWith(symbol)) { text = text.slice(0, -symbol.length).trim(); return true; }
+        return false;
+    };
+    // Aliases such as RMB must be resolved before ISO validation, longest first.
+    for (const [symbol, currency] of explicitSymbols) {
+        if (takeSymbol(symbol)) { code = currency; break; }
+    }
+    if (!code) {
+        const prefix = text.match(/^([A-Za-z]{3})\s*/);
+        const suffix = text.match(/\s*([A-Za-z]{3})$/);
+        const explicit = prefix || suffix;
+        if (explicit) {
+            try { code = validateCurrency(explicit[1]); } catch { return null; }
+            text = (prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length)).trim();
         }
     }
     if (!code && options.currency) {
@@ -94,20 +136,30 @@ export function detectCurrency(rawText, options = {}) {
             style: 'currency', currency: code
         }).formatToParts(1).find(part => part.type === 'currency')?.value;
         const tokens = [...new Set([symbol, '$', '¥'])].filter(Boolean).sort((a, b) => b.length - a.length);
-        const token = tokens.find(candidate => text.startsWith(candidate));
+        const token = tokens.find(candidate => text.startsWith(candidate) || text.endsWith(candidate));
         if (!token) return null;
         if (token === '¥' && !['JPY', 'CNY'].includes(code)) return null;
-        text = text.slice(token.length).trim();
+        takeSymbol(token);
     }
     if (!code) return null;
-    const value = parseLocalizedNumber(text, options.locale || 'en-US');
+    if ((accounting || sign) && /^[+\-(]/.test(text)) return null;
+    const value = parseLocalizedNumber(accounting ? '(' + text + ')' : sign + text, locale);
     return value === null ? null : { value, numFmt: currencyFormat(code, options.locale) };
 }
 
 export function parseCellValue(text, element, options = {}) {
-    const type = element?.getAttribute('data-excel-type');
-    const raw = element?.getAttribute('data-excel-value') ?? text;
-    const cellCurrency = element?.getAttribute('data-excel-currency');
+    // Nested text may be owned by a span, but metadata never crosses into a parent table's cell.
+    const attribute = name => {
+        for (let current = element; current; current = current.parentElement) {
+            const value = current.getAttribute?.(name);
+            if (value !== null && value !== undefined) return value;
+            if (current.tagName === 'TD' || current.tagName === 'TH') break;
+        }
+        return null;
+    };
+    const type = attribute('data-excel-type');
+    const raw = attribute('data-excel-value') ?? text;
+    const cellCurrency = attribute('data-excel-currency');
     const cellOptions = { ...options, currency: cellCurrency ? validateCurrency(cellCurrency) : options.currency };
     if (type === 'text') return { value: String(raw) };
     const currency = detectCurrency(raw, cellOptions);

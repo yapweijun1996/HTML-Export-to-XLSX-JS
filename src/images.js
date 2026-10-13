@@ -26,46 +26,44 @@ export function createImages(dependencies) {
 		});
 	};
 
-	const blobToBase64 = (blob) => new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onerror = () => reject(new Error('Failed to read blob as base64'));
-		reader.onload = () => {
-			const result = reader.result || '';
-			const [, base64] = String(result).split(',');
-			if (base64) {
-				resolve(base64);
-			} else {
-				reject(new Error('Empty base64 result'));
-			}
-		};
-		reader.readAsDataURL(blob);
-	});
-
-	const fetchImageAsBase64 = async (src) => {
+	const fetchImageAsBase64 = async (src, width, height) => {
 		if (!src) return null;
 		let url;
 		try {
 			url = new URL(src, window.location.href);
 		} catch (err) {
-			warnLog('Invalid image URL, skip fetch fallback', src, err);
+			warnLog('Invalid image URL, skip fetch fallback', { code: 'IMAGE_URL_INVALID', source: src, error: err });
 			return null;
 		}
 
 		if (url.protocol === 'file:') {
-			warnLog('Skipping fetch fallback for file:// URL (browser security restriction):', url.href);
+			warnLog('Skipping fetch fallback for file:// URL (browser security restriction)', { code: 'IMAGE_FILE_UNSUPPORTED', source: url.href });
 			return null;
 		}
 
 		try {
 			const response = await fetch(url.href, { mode: 'cors', signal: AbortSignal.timeout(CONFIG.IMAGE_TIMEOUT_MS) });
-			if (!response.ok) return null;
+			if (!response.ok) throw new Error('Image fetch returned HTTP ' + response.status);
 			const blob = await response.blob();
-			const base64 = await blobToBase64(blob);
-			const extension = (blob.type && blob.type.split('/')[1]) || 'png';
-			debugLog('Fetched image via fallback', url.href, `(${extension})`);
-			return { base64, extension };
+			const objectUrl = URL.createObjectURL(blob);
+			try {
+				// Rasterize fetched images too: SVG/WebP MIME suffixes are not ExcelJS image extensions.
+				const image = new Image();
+				image.src = objectUrl;
+				await ensureImageLoaded(image);
+				const canvas = document.createElement('canvas');
+				canvas.width = width || image.naturalWidth;
+				canvas.height = height || image.naturalHeight;
+				const context = canvas.getContext('2d');
+				if (!context) throw new Error('Canvas 2D context unavailable');
+				context.drawImage(image, 0, 0, canvas.width, canvas.height);
+				const base64 = canvas.toDataURL('image/png').split(',')[1];
+				if (!base64) throw new Error('Empty base64 from fetched image');
+				return { base64, extension: 'png' };
+			} finally { URL.revokeObjectURL(objectUrl); }
+
 		} catch (err) {
-			warnLog('Fallback fetch-to-base64 failed', src, err);
+			warnLog('Fallback fetch-to-base64 failed', { code: 'IMAGE_FETCH_FAILED', source: src, error: err });
 			return null;
 		}
 	};
@@ -77,7 +75,7 @@ export function createImages(dependencies) {
 		try {
 			await ensureImageLoaded(element);
 		} catch (err) {
-			warnLog('Image failed to load', element.src, err);
+			warnLog('Image failed to load', { code: 'IMAGE_LOAD_FAILED', source: element.currentSrc || element.src, error: err });
 			return { ...job, error: err };
 		}
 
@@ -91,7 +89,7 @@ export function createImages(dependencies) {
 		const ctx = canvas.getContext('2d');
 		if (!ctx) {
 			const err = new Error('Canvas 2D context unavailable');
-			errorLog(err.message, element.src);
+			errorLog(err.message, { code: 'IMAGE_CANVAS_UNAVAILABLE', source: element.currentSrc || element.src });
 			return { ...job, error: err };
 		}
 
@@ -107,13 +105,13 @@ export function createImages(dependencies) {
 				extension: CONFIG.IMAGE_FORMAT === 'image/png' ? 'png' : 'jpeg'
 			};
 		} catch (err) {
-			warnLog('Canvas toDataURL failed, trying fetch fallback', element.src, err);
-			const fallback = await fetchImageAsBase64(element.src);
+			warnLog('Canvas toDataURL failed, trying fetch fallback', { code: 'IMAGE_CANVAS_FALLBACK', source: element.currentSrc || element.src, error: err });
+			const fallback = await fetchImageAsBase64(element.currentSrc || element.src, renderWidth, renderHeight);
 			if (fallback) {
 				debugLog('Fallback fetch succeeded for image', element.src, `base64Length=${fallback.base64.length}`);
 				return { ...job, base64: fallback.base64, extension: fallback.extension };
 			}
-			errorLog('Image conversion failed after fallback', element.src, err);
+			errorLog('Image conversion failed after fallback', { code: 'IMAGE_CONVERSION_FAILED', source: element.currentSrc || element.src, error: err });
 			return { ...job, error: err };
 		}
 	};
@@ -166,7 +164,7 @@ export function createImages(dependencies) {
 		}
 	};
 
-	const getCellImageAlignment = (cellModel) => {
+	const getCellImageAlignment = (cellModel, includeCss = true) => {
 		if (!cellModel) return null;
 		const element = cellModel.element;
 		const attrName = CONFIG.IMAGE_ALIGNMENT_ATTR;
@@ -177,6 +175,7 @@ export function createImages(dependencies) {
 				return resolved;
 			}
 		}
+		if (!includeCss) return null;
 		const horizontal =
 		cellModel.styles &&
 		cellModel.styles.alignment &&
@@ -211,18 +210,11 @@ export function createImages(dependencies) {
 		return {
 			widthPx,
 			heightPx,
+			columnEdges: columnEdges.slice(cellModel.colStart, cellModel.colEnd + 1).map(edge => edge - leftEdge),
+			rowEdges: rowEdges.slice(cellModel.rowStart, cellModel.rowEnd + 1).map(edge => edge - topEdge),
 			startColIndex: sheetPosition.colStart - 1,
 			startRowIndex: sheetPosition.rowStart - 1
 		};
-	};
-
-	const clampWithin = (offsetPx, spanPx, limitPx) => {
-		if (!isFiniteNumber(offsetPx)) return 0;
-		const safeSpan = isFiniteNumber(spanPx) && spanPx > 0 ? spanPx : 0;
-		const safeLimit = isFiniteNumber(limitPx) && limitPx > 0 ? limitPx : 0;
-		if (!safeLimit) return 0;
-		if (safeSpan >= safeLimit) return 0;
-		return Math.max(0, Math.min(offsetPx, safeLimit - safeSpan));
 	};
 
 	const logLatestWorksheetImage = (worksheet) => {
@@ -243,20 +235,26 @@ export function createImages(dependencies) {
 		debugLog('Worksheet image count', currentImages.length);
 	};
 
+	const coordinateAt = (edges, offset, startIndex = 0) => {
+		const position = locateIndexAndOffset(edges, offset, true);
+		const span = edges[position.index + 1] - edges[position.index];
+		return startIndex + position.index + (span > 0 ? position.offset / span : 0);
+	};
+
 	const addAlignedImage = (worksheet, workbook, job, metrics, offsetLeftPx, offsetTopPx, widthPx, heightPx) => {
 		if (!metrics || widthPx <= 0 || heightPx <= 0) return false;
-		const extraLeft = 1000;
-		const extraTop = 10;
-		const rawLeft = (offsetLeftPx || 0) + extraLeft;
-		const rawTop = (offsetTopPx || 0) + extraTop;
-		const safeLeft = clampWithin(rawLeft, widthPx, metrics.widthPx);
-		const safeTop = clampWithin(rawTop, heightPx, metrics.heightPx);
-		const colRatio = metrics.widthPx > 0 ? safeLeft / metrics.widthPx : 0;
-		const rowRatio = metrics.heightPx > 0 ? safeTop / metrics.heightPx : 0;
+		// Reject an impossible forced flow rather than clamping several images to the same point.
+		const tolerance = CONFIG.EDGE_TOLERANCE_PX;
+		if (offsetLeftPx + widthPx > metrics.widthPx + tolerance || offsetTopPx + heightPx > metrics.heightPx + tolerance) {
+			throw new Error('Image alignment exceeds its cell; enlarge the HTML cell, reduce imageWidthScale, or use precise placement');
+		}
+		const safeLeft = Math.max(0, offsetLeftPx || 0);
+		const safeTop = Math.max(0, offsetTopPx || 0);
 		const tl = {
-			col: metrics.startColIndex + colRatio,
-			row: metrics.startRowIndex + rowRatio
+			col: coordinateAt(metrics.columnEdges, safeLeft, metrics.startColIndex),
+			row: coordinateAt(metrics.rowEdges, safeTop, metrics.startRowIndex)
 		};
+
 		const imgId = workbook.addImage({
 			base64: job.base64,
 			extension: job.extension
@@ -282,8 +280,6 @@ export function createImages(dependencies) {
 			return false;
 		}
 		const spacingPx = Math.max(0, snapToPrecision(CONFIG.IMAGE_SPACING_PX || 0));
-		const maxPerRowConfigured = toPositiveNumber(CONFIG.IMAGE_MAX_PER_ROW);
-		const maxPerRow = maxPerRowConfigured ? Math.max(1, Math.floor(maxPerRowConfigured)) : Number.POSITIVE_INFINITY;
 		const finalImageScale = toPositiveNumber(CONFIG.IMAGE_WIDTH_SCALE) || 1.0;
 
 		const rows = [];
@@ -294,8 +290,7 @@ export function createImages(dependencies) {
 			const heightPx = Math.max(1, job.height * finalImageScale);
 			const item = { job, widthPx, heightPx };
 			const needsWrap =
-			(currentRow.items.length > 0 && currentRow.width + spacingPx + widthPx > metrics.widthPx) ||
-			currentRow.items.length >= maxPerRow;
+			currentRow.items.length > 0 && currentRow.width + spacingPx + widthPx > metrics.widthPx;
 			if (needsWrap) {
 				rows.push(currentRow);
 				currentRow = { items: [], width: 0, height: 0 };
@@ -399,32 +394,10 @@ export function createImages(dependencies) {
 			});
 
 			const parentCell = job.parentCell;
-			const sheetPosition = parentCell?.sheetPosition;
-			if (!sheetPosition) continue;
-
-			const { colStart, rowStart } = sheetPosition;
-			const startColIndex = colStart - 1;
-			const startRowIndex = rowStart - 1;
-
-			// Get the top-left corner of the cell in the original HTML pixel grid
-			const cellHtmlLeft = htmlColumnEdges[startColIndex] || 0;
-			const cellHtmlTop = htmlRowEdges[startRowIndex] || 0;
-
-			// Calculate the image's offset within the cell in pixels and apply final tweaks
-			const offsetX = job.left - cellHtmlLeft + (CONFIG.IMAGE_OFFSET_LEFT_PX || 0);
-			const offsetY = job.top - cellHtmlTop + (CONFIG.IMAGE_OFFSET_TOP_PX || 0);
-
-			// Get the width/height of the anchor cell in the original HTML pixel grid
-			const anchorCellHtmlWidth = (htmlColumnEdges[startColIndex + 1] || cellHtmlLeft) - cellHtmlLeft;
-			const anchorCellHtmlHeight = (htmlRowEdges[startRowIndex + 1] || cellHtmlTop) - cellHtmlTop;
-
-			// Calculate the anchor position as a ratio of the cell's dimensions
-			const colRatio = anchorCellHtmlWidth > 0 ? offsetX / anchorCellHtmlWidth : 0;
-			const rowRatio = anchorCellHtmlHeight > 0 ? offsetY / anchorCellHtmlHeight : 0;
-
+			if (!parentCell?.sheetPosition) continue;
 			const tl = {
-				col: startColIndex + colRatio,
-				row: startRowIndex + rowRatio,
+				col: coordinateAt(htmlColumnEdges, job.left),
+				row: coordinateAt(htmlRowEdges, job.top)
 			};
 
 			// The extension (size) of the image should also be based on the original pixel size
@@ -484,7 +457,7 @@ export function createImages(dependencies) {
 
 		for (const [cellModel, images] of cellGroups.entries()) {
 			if (!Array.isArray(images) || !images.length) continue;
-			const cellAlignment = getCellImageAlignment(cellModel) || defaultAlignment;
+			const cellAlignment = getCellImageAlignment(cellModel, !CONFIG.IMAGE_ALIGNMENT_EXPLICIT) || defaultAlignment;
 			const placed = placeImagesWithAlignment(worksheet, workbook, images, cellModel, layoutModel, cellAlignment);
 			if (!placed) {
 				preciseFallbackJobs.push(...images);
@@ -499,7 +472,7 @@ export function createImages(dependencies) {
 
 
 
-  return { ensureImageLoaded, blobToBase64, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, clampWithin, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
+  return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
 }
 
 // Bounded concurrency prevents large documents from converting every image at once.

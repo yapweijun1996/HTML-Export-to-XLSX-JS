@@ -63,123 +63,172 @@ export function createDom(dependencies) {
 		return false;
 	};
 
-	const normalizeLooseText = (text) => {
-		if (!text) return '';
-		return String(text)
-		.replace(/\u00A0/g, ' ')
-		.replace(/\t+/g, ' ')
-		.replace(/\s+\n/g, '\n')
-		.replace(/\n{3,}/g, '\n\n')
-		.replace(/\s{2,}/g, ' ')
-		.trim();
+	const styleCache = new WeakMap();
+	const computedStyle = element => {
+		if (!styleCache.has(element)) styleCache.set(element, window.getComputedStyle(element));
+		return styleCache.get(element);
+	};
+
+	const computeExcluded = (element, root) => {
+		if (!element || isElementBlacklisted(element, root)) return true;
+		const style = computedStyle(element);
+		if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+		// Visibility may be restored by a child, but these ancestor properties hide the whole subtree.
+		for (let current = element; current; current = current.parentElement) {
+			const currentStyle = computedStyle(current);
+			if (currentStyle.display === 'none' || currentStyle.contentVisibility === 'hidden'
+				|| currentStyle.opacity === '0') return true;
+		}
+		return false;
+	};
+	let snapshotExclusions = null;
+	const isElementExcluded = (element, root) => {
+		if (!element) return true;
+		if (!snapshotExclusions) return computeExcluded(element, root);
+		const boundary = root || document.documentElement;
+		if (!snapshotExclusions.has(boundary)) snapshotExclusions.set(boundary, new WeakMap());
+		const cache = snapshotExclusions.get(boundary);
+		if (!cache.has(element)) cache.set(element, computeExcluded(element, root));
+		return cache.get(element);
+	};
+
+	const hasExportableContent = (element, root) => !isElementExcluded(element, root)
+		|| Array.from(element.querySelectorAll('*')).some(child => !isElementExcluded(child, root));
+
+	const textToken = node => {
+		const style = computedStyle(node.parentElement);
+		const preserve = ['pre', 'pre-wrap', 'break-spaces'].includes(style.whiteSpace);
+		let text = node.textContent;
+		if (!preserve) text = style.whiteSpace === 'pre-line'
+			? text.replace(/[\t\r\f ]+/g, ' ') : text.replace(/[\t\r\n\f ]+/g, ' ');
+		let language = node.parentElement.closest('[lang]')?.getAttribute('lang') || undefined;
+		try { if (language) Intl.getCanonicalLocales(language); } catch { language = undefined; }
+		if (style.textTransform === 'uppercase') text = text.toLocaleUpperCase(language);
+		if (style.textTransform === 'lowercase') text = text.toLocaleLowerCase(language);
+		return { text, preserve, capitalize: style.textTransform === 'capitalize', language };
+	};
+
+	const joinTextTokens = tokens => {
+		let text = '';
+		let preserveTail = false;
+		for (const token of tokens) {
+			if (token.block) {
+				if (text && !text.endsWith('\n')) text = text.replace(/ +$/, '') + '\n';
+				continue;
+			}
+			let part = token.text;
+			if (token.capitalize) part = part.replace(/(^|[^\p{L}\p{M}\p{N}])\p{L}/gu,
+				(match, boundary, index) => index === 0 && /[\p{L}\p{M}\p{N}]$/u.test(text)
+					? match : match.toLocaleUpperCase(token.language));
+			if (!token.preserve) {
+				part = part.replace(/ *\n */g, '\n');
+				if (!text || /[ \n]$/.test(text)) part = part.replace(/^ +/, '');
+				if (part.startsWith('\n')) text = text.replace(/ +$/, '');
+			}
+			text += part;
+			preserveTail = token.preserve;
+		}
+		return (preserveTail ? text : text.replace(/ +$/, '')).replace(/^\n+|\n+$/g, '').replace(/\u00a0/g, ' ');
 	};
 
 	const collectTextFragmentsForCell = (cell, metrics, root) => {
-		if (
-		!cell ||
-		typeof document === 'undefined' ||
-		typeof window === 'undefined' ||
-		typeof document.createTreeWalker !== 'function'
-		) {
-			return [];
-		}
-
-		if (isElementBlacklisted(cell, root)) {
-			return [];
-		}
-
-		const ownerTable = cell.closest('table');
-		if (!ownerTable) return [];
-
+		if (!cell || isElementBlacklisted(cell, root)) return [];
 		const { rootLeft = 0, rootTop = 0, scrollX = 0, scrollY = 0 } = metrics || {};
-		const accepted = typeof NodeFilter !== 'undefined' ? NodeFilter.FILTER_ACCEPT : 1;
-		const rejected = typeof NodeFilter !== 'undefined' ? NodeFilter.FILTER_REJECT : 2;
-		const walker = document.createTreeWalker(
-		cell,
-		typeof NodeFilter !== 'undefined' ? NodeFilter.SHOW_TEXT : 4,
-		{
-			acceptNode: (node) => {
-				if (!node || !node.textContent) return rejected;
-				const parentElement =
-				node.parentElement ||
-				(node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null);
-				if (parentElement) {
-					if (isElementBlacklisted(parentElement, root)) {
-						return rejected;
-					}
-					const nearestTable = parentElement.closest && parentElement.closest('table');
-					if (nearestTable && nearestTable !== ownerTable) {
-						return rejected;
-					}
-				}
-				const normalized = normalizeLooseText(node.textContent);
-				return normalized ? accepted : rejected;
-			}
-		},
-		false
-		);
-
 		const fragments = [];
-		if (!walker) return fragments;
-
-		let current = walker.nextNode();
-		while (current) {
-			const fragmentText = normalizeLooseText(current.textContent);
-			if (fragmentText) {
-				const range = document.createRange();
-				range.selectNodeContents(current);
-				const rect = range.getBoundingClientRect();
-				if (typeof range.detach === 'function') {
-					range.detach();
-				}
-				if (rect && rect.width > 0 && rect.height > 0) {
-					const sourceElement =
-					current.parentElement ||
-					(current.parentNode && current.parentNode.nodeType === 1 ? current.parentNode : cell);
-					if (isElementBlacklisted(sourceElement, root)) {
-						current = walker.nextNode();
-						continue;
-					}
-					fragments.push({
-						text: fragmentText,
-						cell,
-						sourceElement,
-						left: snapToPrecision(rect.left + scrollX - rootLeft),
-						right: snapToPrecision(rect.right + scrollX - rootLeft),
-						top: snapToPrecision(rect.top + scrollY - rootTop),
-						bottom: snapToPrecision(rect.bottom + scrollY - rootTop)
-					});
-				}
+		let active = null;
+		const visit = (node, owner) => {
+			if (node.nodeType === 1) {
+				if (isElementBlacklisted(node, root)) return;
+				// A table or another declared value separates runs, even if the outer owner is the same.
+				if (node.tagName === 'TABLE') { active = null; return; }
+				const declared = node.hasAttribute('data-excel-type') || node.hasAttribute('data-excel-value');
+				if (declared) active = null;
+				const nextOwner = declared ? node : owner;
+				const visible = !isElementExcluded(node, root);
+				if (node.tagName === 'BR' && visible && active) active.tokens.push({ text: '\n' });
+				const block = node !== cell && /^(block|flex|grid|list-item|flow-root)$/.test(computedStyle(node).display);
+				if (block && visible && active) active.tokens.push({ block: true });
+				for (const child of node.childNodes) visit(child, nextOwner);
+				if (block && visible && active) active.tokens.push({ block: true });
+				if (declared) active = null;
+				return;
 			}
-			current = walker.nextNode();
-		}
-
-		return fragments;
+			if (node.nodeType !== 3 || isElementExcluded(node.parentElement, root)) return;
+			const token = textToken(node);
+			if (!token.text.trim()) {
+				if (active && active.sourceElement === owner) active.tokens.push(token);
+				return;
+			}
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			const rect = range.getBoundingClientRect();
+			if (!rect.width || !rect.height) return;
+			const bounds = {
+				left: snapToPrecision(rect.left + scrollX - rootLeft), right: snapToPrecision(rect.right + scrollX - rootLeft),
+				top: snapToPrecision(rect.top + scrollY - rootTop), bottom: snapToPrecision(rect.bottom + scrollY - rootTop)
+			};
+			if (owner && active?.sourceElement === owner) {
+				active.left = Math.min(active.left, bounds.left);
+				active.right = Math.max(active.right, bounds.right);
+				active.top = Math.min(active.top, bounds.top);
+				active.bottom = Math.max(active.bottom, bounds.bottom);
+				active.tokens.push(token);
+			} else {
+				active = { cell, sourceElement: owner || node.parentElement, owner, tokens: [token], ...bounds };
+				fragments.push(active);
+				if (!owner) active = null;
+			}
+		};
+		visit(cell, null);
+		const declaredValues = new Set();
+		const numericOwners = new Set();
+		return fragments.filter(fragment => {
+			fragment.text = joinTextTokens(fragment.tokens).trim();
+			delete fragment.tokens;
+			const owner = fragment.owner;
+			delete fragment.owner;
+			if (owner?.hasAttribute('data-excel-value')) {
+				if (declaredValues.has(owner)) return false;
+				declaredValues.add(owner);
+			} else if (['number', 'currency'].includes(owner?.getAttribute('data-excel-type'))) {
+				if (numericOwners.has(owner)) throw new Error('A numeric declaration spans separate regions; annotate each value separately');
+				numericOwners.add(owner);
+			}
+			return Boolean(fragment.text);
+		});
 	};
 
-	const getCellText = (cell) => {
-		const text = cell.innerText || '';
-		const normalized = text
-		.replace(/\u00A0/g, ' ')
-		.replace(/\t+/g, ' ')
-		.replace(/\s+\n/g, '\n')
-		.replace(/\n{3,}/g, '\n\n');
-
-		const hasInlineFloat = Array.from(cell.querySelectorAll('*')).some((child) => {
-			if (!child || !child.style) return false;
-			const floatValue = (child.style.cssFloat || child.style.float || '').toLowerCase();
-			return floatValue && floatValue !== 'none';
-		});
-
-		if (hasInlineFloat) {
-			return normalized.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+	const getCellText = (cell, root) => {
+		const descendants = Array.from(cell.querySelectorAll('*'));
+		let text = cell.innerText || '';
+		if (isElementExcluded(cell, root) || descendants.some(child => isElementExcluded(child, root))) {
+			const tokens = [];
+			const visit = node => {
+				if (node.nodeType === 3) {
+					if (!isElementExcluded(node.parentElement, root)) tokens.push(textToken(node));
+					return;
+				}
+				if (node.nodeType !== 1 || isElementBlacklisted(node, root)) return;
+				const visible = !isElementExcluded(node, root);
+				if (node.tagName === 'BR') { if (visible) tokens.push({ text: '\n' }); return; }
+				const block = visible && node !== cell && /^(block|flex|grid|table|list-item|flow-root)$/.test(computedStyle(node).display);
+				if (block) tokens.push({ block: true });
+				for (const child of node.childNodes) visit(child);
+				if (block) tokens.push({ block: true });
+			};
+			visit(cell);
+			text = joinTextTokens(tokens);
 		}
-
-		return normalized;
+		const normalized = text.replace(/\u00a0/g, ' ').replace(/\t+/g, ' ');
+		const hasInlineFloat = descendants.some(child => !isElementExcluded(child, root)
+			&& child.style.cssFloat && child.style.cssFloat !== 'none');
+		return hasInlineFloat ? normalized.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim() : normalized;
 	};
 
 
 	const collectDomSnapshot = (root) => {
+		// The synchronous snapshot starts after font/image waits; preload visibility remains live.
+		snapshotExclusions = new WeakMap();
 		const rootRect = root.getBoundingClientRect();
 		const scrollY = window.scrollY || window.pageYOffset || 0;
 		const scrollX = window.scrollX || window.pageXOffset || 0;
@@ -190,7 +239,7 @@ export function createDom(dependencies) {
 		const rootHeight = snapToPrecision(root.scrollHeight);
 
 		const allCells = Array.from(root.querySelectorAll('td, th')).filter(
-		(cell) => !isElementBlacklisted(cell, root)
+		(cell) => hasExportableContent(cell, root)
 		);
 		const nestedCells = [];
 		const leafCells = [];
@@ -201,12 +250,12 @@ export function createDom(dependencies) {
 				leafCells.push(cell);
 			}
 		}
-		const tableElements = Array.from(root.querySelectorAll('table')).filter(
-		(tableElement) => !isElementBlacklisted(tableElement, root)
+		const tableElements = [...(root.matches('table') ? [root] : []), ...root.querySelectorAll('table')].filter(
+		(tableElement) => hasExportableContent(tableElement, root)
 		);
 		const textFragments = [];
 		const pageBreakMarkers = Array.from(root.querySelectorAll(CONFIG.PAGE_BREAK_SELECTOR)).filter(
-		(marker) => !isElementBlacklisted(marker, root)
+		(marker) => !isElementExcluded(marker, root)
 		);
 		const colEdgeSet = new Set([0, rootWidth]);
 		const rowEdgeSet = new Set([0, rootHeight]);
@@ -228,7 +277,7 @@ export function createDom(dependencies) {
 		}
 
 		for (const tableElement of tableElements) {
-			if (!tableElement || tableElement === root) continue;
+			if (!tableElement) continue;
 			const rect = tableElement.getBoundingClientRect();
 			const width = snapToPrecision(rect.width);
 			const height = snapToPrecision(rect.height);
@@ -283,5 +332,5 @@ export function createDom(dependencies) {
 		return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
 	};
 
-  return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, normalizeLooseText, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
+  return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, isElementExcluded, getElementStyle: computedStyle, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
 }

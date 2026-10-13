@@ -30,9 +30,6 @@ export const DEFAULT_CONFIG = {
 		// IMAGE_WIDTH_SCALE provides a final adjustment factor for all image sizes.
 		// Example: 1.1 means "make all images 10% larger". 0.9 means "10% smaller".
 		IMAGE_WIDTH_SCALE: 0.92,
-		// IMAGE_OFFSET_* tweak image anchors inside cells to account for rendering differences.
-		IMAGE_OFFSET_LEFT_PX: 30,
-		IMAGE_OFFSET_TOP_PX: 10,
 		// IMAGE_PLACEMENT_MODE controls how images are anchored.
 		// 'precise' keeps the original pixel offsets, while 'alignment' applies HTML-like flows.
 		IMAGE_PLACEMENT_MODE: 'alignment',
@@ -42,8 +39,6 @@ export const DEFAULT_CONFIG = {
 		IMAGE_ALIGNMENT_ATTR: 'data-excel-image-align',
 		// IMAGE_SPACING_PX applies consistent gaps between auto-aligned images.
 		IMAGE_SPACING_PX: 4,
-		// IMAGE_MAX_PER_ROW limits how many images share one row when flowing inline.
-		IMAGE_MAX_PER_ROW: 3,
 		BLACKLIST_SELECTORS: ['[data-xlsx-ignore]'],
 		PAGE_BREAK_SELECTOR: '[data-xlsx-page-break]',
 		IMAGE_TIMEOUT_MS: 10000,
@@ -110,6 +105,7 @@ export function resolveOptions(root, options = {}) {
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError('imageConcurrency must be an integer');
     if (!['alignment', 'precise'].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError('Invalid imagePlacement');
     if (!['inline', 'block', 'center', 'left', 'right', 'precise'].includes(config.IMAGE_ALIGNMENT)) throw new RangeError('Invalid imageAlignment');
+    config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== undefined;
     if (!Array.isArray(config.BLACKLIST_SELECTORS) || config.BLACKLIST_SELECTORS.some(value => typeof value !== 'string')) {
         throw new TypeError('exclude must be an array of CSS selectors');
     }

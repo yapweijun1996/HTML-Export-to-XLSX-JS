@@ -12,9 +12,33 @@
     new Intl.NumberFormat("en", { style: "currency", currency: code });
     return code;
   }
+  function decimalKey(value) {
+    const match = String(value).match(/^([+-]?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
+    if (!match) return null;
+    let digits = (match[2] + (match[3] || "")).replace(/^0+/, "");
+    if (!digits) return "0";
+    let exponent = Number(match[4] || 0) - (match[3] || "").length;
+    const trimmed = digits.replace(/0+$/, "");
+    exponent += digits.length - trimmed.length;
+    digits = trimmed;
+    if (digits.length > 15) return null;
+    return (match[1] === "-" ? "-" : "") + digits + "e" + exponent;
+  }
+  var minusSigns = /* @__PURE__ */ new Map();
+  function normalizeSigns(text, locale) {
+    if (!minusSigns.has(locale)) {
+      const minus2 = new Intl.NumberFormat(locale).formatToParts(-1).find((part) => part.type === "minusSign")?.value || "-";
+      if (minusSigns.size >= 32) minusSigns.delete(minusSigns.keys().next().value);
+      minusSigns.set(locale, minus2);
+    }
+    const minus = minusSigns.get(locale);
+    return minus && minus !== "-" ? text.split(minus).join("-") : text;
+  }
   function parseLocalizedNumber(value, locale = "en-US") {
-    if (typeof value === "number") return Number.isFinite(value) ? value : null;
-    let text = String(value ?? "").trim().replace(/[\u061c\u200e\u200f]/g, "");
+    if (typeof value === "number") {
+      return Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER && decimalKey(value) !== null ? value : null;
+    }
+    let text = normalizeSigns(String(value ?? "").trim().replace(/[\u061c\u200e\u200f]/g, ""), locale);
     if (!text) return null;
     const negative = /^\(.*\)$/.test(text);
     if (negative) text = text.slice(1, -1);
@@ -28,6 +52,8 @@
     }
     const normalizedGroup = group?.replace(/\s/g, " ");
     text = text.replace(/\s/g, " ");
+    const decimalParts = text.split(decimal);
+    if (decimalParts.length > 2 || decimalParts.length === 2 && !/^\d+$/.test(decimalParts[1])) return null;
     if (normalizedGroup && normalizedGroup !== " " && text.includes(normalizedGroup)) {
       const groupedInteger = text.replace(/^[+-]/, "").split(decimal)[0];
       const sizes = groupedInteger.split(normalizedGroup).map((part) => part.length);
@@ -46,15 +72,16 @@
     if (decimal !== ".") text = text.split(decimal).join(".");
     if (!/^[+-]?\d+(?:\.\d+)?$/.test(text) || negative && /^[+-]/.test(text)) return null;
     const number = Number(text);
-    return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER ? negative ? -number : number : null;
+    const key = decimalKey(text);
+    return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER && key !== null && key === decimalKey(number) ? negative ? -number : number : null;
   }
   var explicitSymbols = [
     ["HK$", "HKD"],
     ["US$", "USD"],
     ["S$", "SGD"],
     ["NT$", "TWD"],
-    ["RM", "MYR"],
     ["RMB", "CNY"],
+    ["RM", "MYR"],
     ["JP\xA5", "JPY"],
     ["\u20AC", "EUR"],
     ["\xA3", "GBP"],
@@ -69,26 +96,43 @@
     return '"' + currency + '" #,##0' + fraction + ';("' + currency + '" #,##0' + fraction + ")";
   }
   function detectCurrency(rawText, options = {}) {
-    let text = String(rawText ?? "").trim();
+    const locale = options.locale || "en-US";
+    let text = normalizeSigns(String(rawText ?? "").trim().replace(/[\u061c\u200e\u200f]/g, ""), locale);
     if (!text) return null;
+    const accounting = /^\(.*\)$/.test(text);
+    if (accounting) text = text.slice(1, -1).trim();
+    const sign = text.match(/^[+-]/)?.[0] || "";
+    if (accounting && sign) return null;
+    if (sign) text = text.slice(1).trim();
     let code = null;
-    const prefix = text.match(/^([A-Za-z]{3})\s*(?=[\d(+-])/);
-    const suffix = text.match(/\s*([A-Za-z]{3})$/);
-    const explicit = prefix || suffix;
-    if (explicit) {
-      try {
-        code = validateCurrency(explicit[1]);
-      } catch {
-        return null;
+    const takeSymbol = (symbol) => {
+      if (text.startsWith(symbol)) {
+        text = text.slice(symbol.length).trim();
+        return true;
       }
-      text = prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length);
-    } else {
-      for (const [symbol, currency] of explicitSymbols) {
-        if (text.startsWith(symbol)) {
-          code = currency;
-          text = text.slice(symbol.length).trim();
-          break;
+      if (text.endsWith(symbol)) {
+        text = text.slice(0, -symbol.length).trim();
+        return true;
+      }
+      return false;
+    };
+    for (const [symbol, currency] of explicitSymbols) {
+      if (takeSymbol(symbol)) {
+        code = currency;
+        break;
+      }
+    }
+    if (!code) {
+      const prefix = text.match(/^([A-Za-z]{3})\s*/);
+      const suffix = text.match(/\s*([A-Za-z]{3})$/);
+      const explicit = prefix || suffix;
+      if (explicit) {
+        try {
+          code = validateCurrency(explicit[1]);
+        } catch {
+          return null;
         }
+        text = (prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length)).trim();
       }
     }
     if (!code && options.currency) {
@@ -98,19 +142,28 @@
         currency: code
       }).formatToParts(1).find((part) => part.type === "currency")?.value;
       const tokens = [.../* @__PURE__ */ new Set([symbol, "$", "\xA5"])].filter(Boolean).sort((a, b) => b.length - a.length);
-      const token = tokens.find((candidate) => text.startsWith(candidate));
+      const token = tokens.find((candidate) => text.startsWith(candidate) || text.endsWith(candidate));
       if (!token) return null;
       if (token === "\xA5" && !["JPY", "CNY"].includes(code)) return null;
-      text = text.slice(token.length).trim();
+      takeSymbol(token);
     }
     if (!code) return null;
-    const value = parseLocalizedNumber(text, options.locale || "en-US");
+    if ((accounting || sign) && /^[+\-(]/.test(text)) return null;
+    const value = parseLocalizedNumber(accounting ? "(" + text + ")" : sign + text, locale);
     return value === null ? null : { value, numFmt: currencyFormat(code, options.locale) };
   }
   function parseCellValue(text, element, options = {}) {
-    const type = element?.getAttribute("data-excel-type");
-    const raw = element?.getAttribute("data-excel-value") ?? text;
-    const cellCurrency = element?.getAttribute("data-excel-currency");
+    const attribute = (name) => {
+      for (let current = element; current; current = current.parentElement) {
+        const value = current.getAttribute?.(name);
+        if (value !== null && value !== void 0) return value;
+        if (current.tagName === "TD" || current.tagName === "TH") break;
+      }
+      return null;
+    };
+    const type = attribute("data-excel-type");
+    const raw = attribute("data-excel-value") ?? text;
+    const cellCurrency = attribute("data-excel-currency");
     const cellOptions = { ...options, currency: cellCurrency ? validateCurrency(cellCurrency) : options.currency };
     if (type === "text") return { value: String(raw) };
     const currency = detectCurrency(raw, cellOptions);
@@ -155,9 +208,6 @@
     // IMAGE_WIDTH_SCALE provides a final adjustment factor for all image sizes.
     // Example: 1.1 means "make all images 10% larger". 0.9 means "10% smaller".
     IMAGE_WIDTH_SCALE: 0.92,
-    // IMAGE_OFFSET_* tweak image anchors inside cells to account for rendering differences.
-    IMAGE_OFFSET_LEFT_PX: 30,
-    IMAGE_OFFSET_TOP_PX: 10,
     // IMAGE_PLACEMENT_MODE controls how images are anchored.
     // 'precise' keeps the original pixel offsets, while 'alignment' applies HTML-like flows.
     IMAGE_PLACEMENT_MODE: "alignment",
@@ -168,8 +218,6 @@
     IMAGE_ALIGNMENT_ATTR: "data-excel-image-align",
     // IMAGE_SPACING_PX applies consistent gaps between auto-aligned images.
     IMAGE_SPACING_PX: 4,
-    // IMAGE_MAX_PER_ROW limits how many images share one row when flowing inline.
-    IMAGE_MAX_PER_ROW: 3,
     BLACKLIST_SELECTORS: ["[data-xlsx-ignore]"],
     PAGE_BREAK_SELECTOR: "[data-xlsx-page-break]",
     IMAGE_TIMEOUT_MS: 1e4,
@@ -264,6 +312,7 @@
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError("imageConcurrency must be an integer");
     if (!["alignment", "precise"].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError("Invalid imagePlacement");
     if (!["inline", "block", "center", "left", "right", "precise"].includes(config.IMAGE_ALIGNMENT)) throw new RangeError("Invalid imageAlignment");
+    config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== void 0;
     if (!Array.isArray(config.BLACKLIST_SELECTORS) || config.BLACKLIST_SELECTORS.some((value) => typeof value !== "string")) {
       throw new TypeError("exclude must be an array of CSS selectors");
     }
@@ -327,7 +376,7 @@
           const metrics = context.measureText("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
           avgCharWidth = metrics.width / 62;
         } catch (e) {
-          errorLog("Failed to measure avg char width, falling back to 7px", e);
+          errorLog("Failed to measure avg char width, falling back to 7px", { code: "FONT_MEASUREMENT_FAILED", error: e });
           avgCharWidth = 7;
         }
         debugLog(`Measured average character width for font "${fontStyle}":`, avgCharWidth);
@@ -473,7 +522,7 @@
 
   // src/styles.js
   function createStyles(dependencies) {
-    const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp: escapeRegExp2, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
+    const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp: escapeRegExp2, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
     const COLOR_CANVAS_CTX = (function() {
       if (typeof document === "undefined") return null;
       const canvas = document.createElement("canvas");
@@ -801,74 +850,46 @@
       const parsed = parseInt(str, 10);
       return isFiniteNumber(parsed) ? parsed : 400;
     };
-    const isCellUniformlyBold = (cell, baseWeight) => {
-      if (!cell || typeof document === "undefined" || typeof window === "undefined") return false;
-      if (typeof document.createTreeWalker !== "function") return false;
-      const showText = typeof NodeFilter !== "undefined" ? NodeFilter.SHOW_TEXT : 4;
-      let walker;
-      try {
-        walker = document.createTreeWalker(cell, showText, null);
-      } catch (err) {
-        return false;
-      }
-      let sawText = false;
-      while (walker.nextNode()) {
-        const textNode = walker.currentNode;
-        if (!textNode || !textNode.textContent || !textNode.textContent.trim()) continue;
-        sawText = true;
-        let effectiveWeight = baseWeight;
-        let ancestor = textNode.parentElement;
-        while (ancestor && ancestor !== cell) {
-          const ancestorStyle = window.getComputedStyle(ancestor);
-          const ancestorWeight = normalizeFontWeight(ancestorStyle.fontWeight);
-          if (ancestorWeight >= 600) {
-            effectiveWeight = ancestorWeight;
-            break;
-          }
-          ancestor = ancestor.parentElement;
-        }
-        if (effectiveWeight < 600) {
-          return false;
-        }
-      }
-      return sawText;
-    };
-    const resolveFontSizePx = (cell, cellStyle) => {
-      const baseSize = parseFloat(cellStyle.fontSize) || 0;
-      if (!cell || typeof document === "undefined" || typeof window === "undefined") return baseSize;
-      const ELEMENT_NODE = typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1;
-      let walker;
-      try {
-        const showElements = typeof NodeFilter !== "undefined" ? NodeFilter.SHOW_ELEMENT : ELEMENT_NODE;
-        walker = document.createTreeWalker(cell, showElements, null);
-      } catch (err) {
-        return baseSize;
-      }
-      let maxSize = baseSize;
+    const visibleTextCache = /* @__PURE__ */ new WeakMap();
+    const visibleTextNodes = (cell) => {
+      if (!cell || typeof document === "undefined") return [];
+      if (visibleTextCache.has(cell)) return visibleTextCache.get(cell);
+      const nodes = [];
+      const table = cell.closest("table");
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (!node || node.nodeType !== ELEMENT_NODE && node.nodeType !== 1) continue;
-        const nodeStyle = window.getComputedStyle(node);
-        const childSize = parseFloat(nodeStyle.fontSize) || 0;
-        if (childSize > maxSize) {
-          maxSize = childSize;
-        }
+        if (!node.textContent.trim() || node.parentElement.closest("table") !== table || dependencies.isElementExcluded(node.parentElement, cell)) continue;
+        nodes.push(node);
       }
-      return maxSize;
+      visibleTextCache.set(cell, nodes);
+      return nodes;
+    };
+    const isCellUniformlyBold = (cell, baseWeight) => {
+      const nodes = visibleTextNodes(cell);
+      return nodes.length ? nodes.every((node) => normalizeFontWeight(getElementStyle(node.parentElement).fontWeight) >= 600) : baseWeight >= 600;
+    };
+    const resolveFontSizePx = (cell, cellStyle) => {
+      const sizes = visibleTextNodes(cell).map((node) => parseFloat(getElementStyle(node.parentElement).fontSize) || 0);
+      return sizes.length ? sizes.reduce((maximum, size) => Math.max(maximum, size), 0) : parseFloat(cellStyle.fontSize) || 0;
+    };
+    const backgroundCaches = /* @__PURE__ */ new WeakMap();
+    const extractBackground = (element, root) => {
+      if (!element) return null;
+      if (!backgroundCaches.has(root)) backgroundCaches.set(root, /* @__PURE__ */ new WeakMap());
+      const cache = backgroundCaches.get(root);
+      if (cache.has(element)) return cache.get(element);
+      let color = dependencies.isElementExcluded(element, root) ? null : colorToARGB(getElementStyle(element).backgroundColor);
+      if (!color && element !== root) color = extractBackground(element.parentElement, root);
+      cache.set(element, color);
+      return color;
     };
     const extractFont = (cell, cs) => {
       const families = (cs.fontFamily || "").split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
       const name = families[0] || "Arial";
       const sizePx = resolveFontSizePx(cell, cs);
       const weight = normalizeFontWeight(cs.fontWeight);
-      let bold = weight >= 600;
-      if (!bold) {
-        try {
-          bold = isCellUniformlyBold(cell, weight);
-        } catch (err) {
-          bold = false;
-        }
-      }
+      const bold = isCellUniformlyBold(cell, weight);
       let excelFontSize;
       if (sizePx > 0) {
         const pointSize = pxToPoint(sizePx, FONT_SCALE);
@@ -912,12 +933,12 @@
         const walker = document.createTreeWalker(cell, showText, null);
         while (walker.nextNode()) {
           const node = walker.currentNode;
-          if (!node || !node.textContent || !node.textContent.trim()) continue;
+          if (!node || !node.textContent || !node.textContent.trim() || dependencies.isElementExcluded(node.parentElement, cell) || node.parentElement.closest("table") !== cell.closest("table")) continue;
           let current = node.parentElement;
           let extraLeft = 0;
           let extraRight = 0;
           while (current && current !== cell) {
-            const style = window.getComputedStyle(current);
+            const style = getElementStyle(current);
             extraLeft += parseCssPixelValue(style.paddingLeft) + parseCssPixelValue(style.marginLeft) + parseCssPixelValue(style.borderLeftWidth);
             extraRight += parseCssPixelValue(style.paddingRight) + parseCssPixelValue(style.marginRight) + parseCssPixelValue(style.borderRightWidth);
             current = current.parentElement;
@@ -954,12 +975,12 @@
         const walker = document.createTreeWalker(cell, showText, null);
         while (walker.nextNode()) {
           const node = walker.currentNode;
-          if (!node || !node.textContent || !node.textContent.trim()) continue;
+          if (!node || !node.textContent || !node.textContent.trim() || dependencies.isElementExcluded(node.parentElement, cell) || node.parentElement.closest("table") !== cell.closest("table")) continue;
           let current = node.parentElement;
           let extraTop = 0;
           let extraBottom = 0;
           while (current && current !== cell) {
-            const style = window.getComputedStyle(current);
+            const style = getElementStyle(current);
             extraTop += parseCssPixelValue(style.paddingTop) + parseCssPixelValue(style.marginTop) + parseCssPixelValue(style.borderTopWidth);
             extraBottom += parseCssPixelValue(style.paddingBottom) + parseCssPixelValue(style.marginBottom) + parseCssPixelValue(style.borderBottomWidth);
             current = current.parentElement;
@@ -998,9 +1019,9 @@
         return normalized || void 0;
       };
       const horizontalMap = {
-        start: "left",
+        start: cs.direction === "rtl" ? "right" : "left",
         left: "left",
-        end: "right",
+        end: cs.direction === "rtl" ? "left" : "right",
         right: "right",
         center: "center",
         justify: "justify"
@@ -1041,7 +1062,7 @@
       }
       return alignment;
     };
-    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
   }
 
   // src/dom.js
@@ -1098,91 +1119,170 @@
       }
       return false;
     };
-    const normalizeLooseText = (text) => {
-      if (!text) return "";
-      return String(text).replace(/\u00A0/g, " ").replace(/\t+/g, " ").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/\s{2,}/g, " ").trim();
+    const styleCache = /* @__PURE__ */ new WeakMap();
+    const computedStyle = (element) => {
+      if (!styleCache.has(element)) styleCache.set(element, window.getComputedStyle(element));
+      return styleCache.get(element);
+    };
+    const computeExcluded = (element, root) => {
+      if (!element || isElementBlacklisted(element, root)) return true;
+      const style = computedStyle(element);
+      if (style.visibility === "hidden" || style.visibility === "collapse") return true;
+      for (let current = element; current; current = current.parentElement) {
+        const currentStyle = computedStyle(current);
+        if (currentStyle.display === "none" || currentStyle.contentVisibility === "hidden" || currentStyle.opacity === "0") return true;
+      }
+      return false;
+    };
+    let snapshotExclusions = null;
+    const isElementExcluded = (element, root) => {
+      if (!element) return true;
+      if (!snapshotExclusions) return computeExcluded(element, root);
+      const boundary = root || document.documentElement;
+      if (!snapshotExclusions.has(boundary)) snapshotExclusions.set(boundary, /* @__PURE__ */ new WeakMap());
+      const cache = snapshotExclusions.get(boundary);
+      if (!cache.has(element)) cache.set(element, computeExcluded(element, root));
+      return cache.get(element);
+    };
+    const hasExportableContent = (element, root) => !isElementExcluded(element, root) || Array.from(element.querySelectorAll("*")).some((child) => !isElementExcluded(child, root));
+    const textToken = (node) => {
+      const style = computedStyle(node.parentElement);
+      const preserve = ["pre", "pre-wrap", "break-spaces"].includes(style.whiteSpace);
+      let text = node.textContent;
+      if (!preserve) text = style.whiteSpace === "pre-line" ? text.replace(/[\t\r\f ]+/g, " ") : text.replace(/[\t\r\n\f ]+/g, " ");
+      let language = node.parentElement.closest("[lang]")?.getAttribute("lang") || void 0;
+      try {
+        if (language) Intl.getCanonicalLocales(language);
+      } catch {
+        language = void 0;
+      }
+      if (style.textTransform === "uppercase") text = text.toLocaleUpperCase(language);
+      if (style.textTransform === "lowercase") text = text.toLocaleLowerCase(language);
+      return { text, preserve, capitalize: style.textTransform === "capitalize", language };
+    };
+    const joinTextTokens = (tokens) => {
+      let text = "";
+      let preserveTail = false;
+      for (const token of tokens) {
+        if (token.block) {
+          if (text && !text.endsWith("\n")) text = text.replace(/ +$/, "") + "\n";
+          continue;
+        }
+        let part = token.text;
+        if (token.capitalize) part = part.replace(
+          /(^|[^\p{L}\p{M}\p{N}])\p{L}/gu,
+          (match, boundary, index) => index === 0 && /[\p{L}\p{M}\p{N}]$/u.test(text) ? match : match.toLocaleUpperCase(token.language)
+        );
+        if (!token.preserve) {
+          part = part.replace(/ *\n */g, "\n");
+          if (!text || /[ \n]$/.test(text)) part = part.replace(/^ +/, "");
+          if (part.startsWith("\n")) text = text.replace(/ +$/, "");
+        }
+        text += part;
+        preserveTail = token.preserve;
+      }
+      return (preserveTail ? text : text.replace(/ +$/, "")).replace(/^\n+|\n+$/g, "").replace(/\u00a0/g, " ");
     };
     const collectTextFragmentsForCell = (cell, metrics, root) => {
-      if (!cell || typeof document === "undefined" || typeof window === "undefined" || typeof document.createTreeWalker !== "function") {
-        return [];
-      }
-      if (isElementBlacklisted(cell, root)) {
-        return [];
-      }
-      const ownerTable = cell.closest("table");
-      if (!ownerTable) return [];
+      if (!cell || isElementBlacklisted(cell, root)) return [];
       const { rootLeft = 0, rootTop = 0, scrollX = 0, scrollY: scrollY2 = 0 } = metrics || {};
-      const accepted = typeof NodeFilter !== "undefined" ? NodeFilter.FILTER_ACCEPT : 1;
-      const rejected = typeof NodeFilter !== "undefined" ? NodeFilter.FILTER_REJECT : 2;
-      const walker = document.createTreeWalker(
-        cell,
-        typeof NodeFilter !== "undefined" ? NodeFilter.SHOW_TEXT : 4,
-        {
-          acceptNode: (node) => {
-            if (!node || !node.textContent) return rejected;
-            const parentElement = node.parentElement || (node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null);
-            if (parentElement) {
-              if (isElementBlacklisted(parentElement, root)) {
-                return rejected;
-              }
-              const nearestTable = parentElement.closest && parentElement.closest("table");
-              if (nearestTable && nearestTable !== ownerTable) {
-                return rejected;
-              }
-            }
-            const normalized = normalizeLooseText(node.textContent);
-            return normalized ? accepted : rejected;
-          }
-        },
-        false
-      );
       const fragments = [];
-      if (!walker) return fragments;
-      let current = walker.nextNode();
-      while (current) {
-        const fragmentText = normalizeLooseText(current.textContent);
-        if (fragmentText) {
-          const range = document.createRange();
-          range.selectNodeContents(current);
-          const rect = range.getBoundingClientRect();
-          if (typeof range.detach === "function") {
-            range.detach();
+      let active = null;
+      const visit = (node, owner) => {
+        if (node.nodeType === 1) {
+          if (isElementBlacklisted(node, root)) return;
+          if (node.tagName === "TABLE") {
+            active = null;
+            return;
           }
-          if (rect && rect.width > 0 && rect.height > 0) {
-            const sourceElement = current.parentElement || (current.parentNode && current.parentNode.nodeType === 1 ? current.parentNode : cell);
-            if (isElementBlacklisted(sourceElement, root)) {
-              current = walker.nextNode();
-              continue;
-            }
-            fragments.push({
-              text: fragmentText,
-              cell,
-              sourceElement,
-              left: snapToPrecision(rect.left + scrollX - rootLeft),
-              right: snapToPrecision(rect.right + scrollX - rootLeft),
-              top: snapToPrecision(rect.top + scrollY2 - rootTop),
-              bottom: snapToPrecision(rect.bottom + scrollY2 - rootTop)
-            });
-          }
+          const declared = node.hasAttribute("data-excel-type") || node.hasAttribute("data-excel-value");
+          if (declared) active = null;
+          const nextOwner = declared ? node : owner;
+          const visible = !isElementExcluded(node, root);
+          if (node.tagName === "BR" && visible && active) active.tokens.push({ text: "\n" });
+          const block = node !== cell && /^(block|flex|grid|list-item|flow-root)$/.test(computedStyle(node).display);
+          if (block && visible && active) active.tokens.push({ block: true });
+          for (const child of node.childNodes) visit(child, nextOwner);
+          if (block && visible && active) active.tokens.push({ block: true });
+          if (declared) active = null;
+          return;
         }
-        current = walker.nextNode();
-      }
-      return fragments;
-    };
-    const getCellText = (cell) => {
-      const text = cell.innerText || "";
-      const normalized = text.replace(/\u00A0/g, " ").replace(/\t+/g, " ").replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
-      const hasInlineFloat = Array.from(cell.querySelectorAll("*")).some((child) => {
-        if (!child || !child.style) return false;
-        const floatValue = (child.style.cssFloat || child.style.float || "").toLowerCase();
-        return floatValue && floatValue !== "none";
+        if (node.nodeType !== 3 || isElementExcluded(node.parentElement, root)) return;
+        const token = textToken(node);
+        if (!token.text.trim()) {
+          if (active && active.sourceElement === owner) active.tokens.push(token);
+          return;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const rect = range.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const bounds = {
+          left: snapToPrecision(rect.left + scrollX - rootLeft),
+          right: snapToPrecision(rect.right + scrollX - rootLeft),
+          top: snapToPrecision(rect.top + scrollY2 - rootTop),
+          bottom: snapToPrecision(rect.bottom + scrollY2 - rootTop)
+        };
+        if (owner && active?.sourceElement === owner) {
+          active.left = Math.min(active.left, bounds.left);
+          active.right = Math.max(active.right, bounds.right);
+          active.top = Math.min(active.top, bounds.top);
+          active.bottom = Math.max(active.bottom, bounds.bottom);
+          active.tokens.push(token);
+        } else {
+          active = { cell, sourceElement: owner || node.parentElement, owner, tokens: [token], ...bounds };
+          fragments.push(active);
+          if (!owner) active = null;
+        }
+      };
+      visit(cell, null);
+      const declaredValues = /* @__PURE__ */ new Set();
+      const numericOwners = /* @__PURE__ */ new Set();
+      return fragments.filter((fragment) => {
+        fragment.text = joinTextTokens(fragment.tokens).trim();
+        delete fragment.tokens;
+        const owner = fragment.owner;
+        delete fragment.owner;
+        if (owner?.hasAttribute("data-excel-value")) {
+          if (declaredValues.has(owner)) return false;
+          declaredValues.add(owner);
+        } else if (["number", "currency"].includes(owner?.getAttribute("data-excel-type"))) {
+          if (numericOwners.has(owner)) throw new Error("A numeric declaration spans separate regions; annotate each value separately");
+          numericOwners.add(owner);
+        }
+        return Boolean(fragment.text);
       });
-      if (hasInlineFloat) {
-        return normalized.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+    };
+    const getCellText = (cell, root) => {
+      const descendants = Array.from(cell.querySelectorAll("*"));
+      let text = cell.innerText || "";
+      if (isElementExcluded(cell, root) || descendants.some((child) => isElementExcluded(child, root))) {
+        const tokens = [];
+        const visit = (node) => {
+          if (node.nodeType === 3) {
+            if (!isElementExcluded(node.parentElement, root)) tokens.push(textToken(node));
+            return;
+          }
+          if (node.nodeType !== 1 || isElementBlacklisted(node, root)) return;
+          const visible = !isElementExcluded(node, root);
+          if (node.tagName === "BR") {
+            if (visible) tokens.push({ text: "\n" });
+            return;
+          }
+          const block = visible && node !== cell && /^(block|flex|grid|table|list-item|flow-root)$/.test(computedStyle(node).display);
+          if (block) tokens.push({ block: true });
+          for (const child of node.childNodes) visit(child);
+          if (block) tokens.push({ block: true });
+        };
+        visit(cell);
+        text = joinTextTokens(tokens);
       }
-      return normalized;
+      const normalized = text.replace(/\u00a0/g, " ").replace(/\t+/g, " ");
+      const hasInlineFloat = descendants.some((child) => !isElementExcluded(child, root) && child.style.cssFloat && child.style.cssFloat !== "none");
+      return hasInlineFloat ? normalized.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim() : normalized;
     };
     const collectDomSnapshot = (root) => {
+      snapshotExclusions = /* @__PURE__ */ new WeakMap();
       const rootRect = root.getBoundingClientRect();
       const scrollY2 = window.scrollY || window.pageYOffset || 0;
       const scrollX = window.scrollX || window.pageXOffset || 0;
@@ -1191,7 +1291,7 @@
       const rootWidth = snapToPrecision(root.scrollWidth);
       const rootHeight = snapToPrecision(root.scrollHeight);
       const allCells = Array.from(root.querySelectorAll("td, th")).filter(
-        (cell) => !isElementBlacklisted(cell, root)
+        (cell) => hasExportableContent(cell, root)
       );
       const nestedCells = [];
       const leafCells = [];
@@ -1202,12 +1302,12 @@
           leafCells.push(cell);
         }
       }
-      const tableElements = Array.from(root.querySelectorAll("table")).filter(
-        (tableElement) => !isElementBlacklisted(tableElement, root)
+      const tableElements = [...root.matches("table") ? [root] : [], ...root.querySelectorAll("table")].filter(
+        (tableElement) => hasExportableContent(tableElement, root)
       );
       const textFragments = [];
       const pageBreakMarkers = Array.from(root.querySelectorAll(CONFIG.PAGE_BREAK_SELECTOR)).filter(
-        (marker) => !isElementBlacklisted(marker, root)
+        (marker) => !isElementExcluded(marker, root)
       );
       const colEdgeSet = /* @__PURE__ */ new Set([0, rootWidth]);
       const rowEdgeSet = /* @__PURE__ */ new Set([0, rootHeight]);
@@ -1227,7 +1327,7 @@
         rowEdgeSet.add(bottom);
       }
       for (const tableElement of tableElements) {
-        if (!tableElement || tableElement === root) continue;
+        if (!tableElement) continue;
         const rect = tableElement.getBoundingClientRect();
         const width = snapToPrecision(rect.width);
         const height = snapToPrecision(rect.height);
@@ -1277,12 +1377,12 @@
       const rowEdges = normalizeEdges(rowEdgeSet);
       return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
     };
-    return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, normalizeLooseText, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
+    return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, isElementExcluded, getElementStyle: computedStyle, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
   }
 
   // src/layout.js
   function createLayout(dependencies) {
-    const { CONFIG, collectDomSnapshot, colorToARGB, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, detectCurrency: detectCurrency2, extractAlignment, extractBorders, extractFont, getCellText, parseCellValue: parseCellValue2, isElementBlacklisted, normalizeEdges, resolveSize, snapToPrecision } = dependencies;
+    const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractBackground, getCellText, parseCellValue: parseCellValue2, isElementExcluded, snapToPrecision } = dependencies;
     const buildLayoutModel = (root) => {
       const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root);
       const describeCell = (cell) => {
@@ -1303,7 +1403,7 @@
         const rowStartIndex = rowEdges.findIndex((edge) => Math.abs(edge - top) <= CONFIG.EDGE_TOLERANCE_PX);
         const rowEndIndex = rowEdges.findIndex((edge) => Math.abs(edge - bottom) <= CONFIG.EDGE_TOLERANCE_PX);
         if (colStartIndex === -1 || colEndIndex === -1 || rowStartIndex === -1 || rowEndIndex === -1) {
-          dependencies.warnLog("A cell has unmatched grid edges");
+          dependencies.warnLog("A cell has unmatched grid edges", { code: "GRID_EDGE_MISMATCH" });
           return null;
         }
         return {
@@ -1350,7 +1450,6 @@
       const cells = [];
       const images = [];
       const deferredBorders = [];
-      const tableBackgroundRegions = [];
       for (const cell of leafCells) {
         const descriptor = describeCell(cell);
         if (!descriptor) continue;
@@ -1365,12 +1464,12 @@
           rowStartIndex,
           rowEndIndex
         } = descriptor;
-        const textValue = getCellText(cell);
+        const textValue = getCellText(cell, root);
         const cs = window.getComputedStyle(cell);
         const font = extractFont(cell, cs);
         const alignment = extractAlignment(cell, cs, textValue);
         const borders = extractBorders(cs, cell);
-        const fillColor = colorToARGB(cs.backgroundColor);
+        const fillColor = extractBackground(cell, root);
         const currencyMatch = parseCellValue2(textValue, cell);
         const exportedValue = currencyMatch.value;
         const cellModel = {
@@ -1396,44 +1495,6 @@
           images: [],
           sheetPosition: null
         };
-        const imgList = Array.from(cell.querySelectorAll("img")).filter(
-          (img) => !isElementBlacklisted(img, root)
-        );
-        for (const img of imgList) {
-          const imgRect = img.getBoundingClientRect();
-          const scrollY2 = window.scrollY || window.pageYOffset || 0;
-          const scrollX = window.scrollX || window.pageXOffset || 0;
-          const rootLeft2 = snapToPrecision(root.getBoundingClientRect().left + scrollX);
-          const rootTop2 = snapToPrecision(root.getBoundingClientRect().top + scrollY2);
-          const imgWidth = resolveSize(imgRect.width, img.width, img.naturalWidth);
-          const imgHeight = resolveSize(imgRect.height, img.height, img.naturalHeight);
-          if (!imgWidth || !imgHeight) continue;
-          const job = {
-            element: img,
-            width: imgWidth,
-            height: imgHeight,
-            parentCell: cellModel,
-            left: snapToPrecision(imgRect.left + scrollX - rootLeft2),
-            top: snapToPrecision(imgRect.top + scrollY2 - rootTop2),
-            offsetWithinCell: {
-              left: snapToPrecision(imgRect.left - rect.left),
-              top: snapToPrecision(imgRect.top - rect.top)
-            }
-          };
-          cellModel.images.push(job);
-          images.push(job);
-          debugLog("Queued image job", img?.src || "(unknown src)", {
-            width: job.width,
-            height: job.height,
-            offsetWithinCell: job.offsetWithinCell,
-            parentCellBounds: {
-              colStart: cellModel.colStart,
-              colEnd: cellModel.colEnd,
-              rowStart: cellModel.rowStart,
-              rowEnd: cellModel.rowEnd
-            }
-          });
-        }
         cells.push(cellModel);
       }
       if (textFragments.length) {
@@ -1450,17 +1511,13 @@
           const rowEndIndexRaw = resolveEdgeIndex(rowEdges, fragment.bottom, descriptor.rowEndIndex);
           const colEndIndex = Math.max(colStartIndex + 1, colEndIndexRaw);
           const rowEndIndex = Math.max(rowStartIndex + 1, rowEndIndexRaw);
-          const duplicate = cells.some(
-            (existing) => existing.colStart === colStartIndex && existing.rowStart === rowStartIndex
-          );
-          if (duplicate) continue;
           const referenceElement = fragment.sourceElement || fragment.cell;
           const cs = window.getComputedStyle(referenceElement);
           const font = extractFont(referenceElement, cs);
           const alignment = extractAlignment(referenceElement, cs, fragment.text);
-          const fillColor = colorToARGB(cs.backgroundColor);
-          const currencyMatch = detectCurrency2(fragment.text);
-          const exportedValue = currencyMatch ? currencyMatch.value : fragment.text;
+          const fillColor = extractBackground(referenceElement, root);
+          const currencyMatch = parseCellValue2(fragment.text, referenceElement);
+          const exportedValue = currencyMatch.value;
           cells.push({
             element: fragment.cell,
             value: exportedValue,
@@ -1485,6 +1542,38 @@
             sheetPosition: null
           });
         }
+      }
+      const imageOwners = /* @__PURE__ */ new Map();
+      for (const img of root.querySelectorAll("img")) {
+        if (isElementExcluded(img, root)) continue;
+        const rect = img.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const owner = img.closest("td, th");
+        if (!owner || !root.contains(owner)) continue;
+        let parentCell = imageOwners.get(owner);
+        if (!parentCell) {
+          const descriptor = getDescriptor(owner);
+          if (!descriptor) continue;
+          parentCell = {
+            element: owner,
+            bounds: { left: descriptor.left, top: descriptor.top, width: descriptor.width, height: descriptor.height },
+            colStart: descriptor.colStartIndex,
+            colEnd: Math.max(descriptor.colStartIndex + 1, descriptor.colEndIndex),
+            rowStart: descriptor.rowStartIndex,
+            rowEnd: Math.max(descriptor.rowStartIndex + 1, descriptor.rowEndIndex),
+            styles: { alignment: extractAlignment(owner, window.getComputedStyle(owner), "") },
+            sheetPosition: { colStart: descriptor.colStartIndex + 1, rowStart: descriptor.rowStartIndex + 1 }
+          };
+          imageOwners.set(owner, parentCell);
+        }
+        images.push({
+          element: img,
+          parentCell,
+          width: rect.width,
+          height: rect.height,
+          left: snapToPrecision(rect.left + window.scrollX - rootLeft),
+          top: snapToPrecision(rect.top + window.scrollY - rootTop)
+        });
       }
       const computedStyleCache = /* @__PURE__ */ new WeakMap();
       const getCachedComputedStyle = (element) => {
@@ -1587,26 +1676,6 @@
           }
         }
       };
-      const applyBackgroundRegions = (cells2, regions) => {
-        if (!Array.isArray(regions) || !regions.length) return;
-        for (const region of regions) {
-          if (!region || !region.fill) continue;
-          const { rowStart, rowEnd, colStart, colEnd, fill } = region;
-          for (const cell of cells2) {
-            if (!cell) continue;
-            if (cell.rowStart >= rowEnd || cell.rowEnd <= rowStart) continue;
-            if (cell.colStart >= colEnd || cell.colEnd <= colStart) continue;
-            cell.styles = cell.styles || {};
-            if (!cell.styles.fill) {
-              cell.styles.fill = {
-                type: fill.type,
-                pattern: fill.pattern,
-                fgColor: fill.fgColor ? { ...fill.fgColor } : void 0
-              };
-            }
-          }
-        }
-      };
       const applyOuterElementBorders = (descriptor, borders) => {
         if (!descriptor || !borders) return;
         pushDeferredBorderInstruction(descriptor, "top", borders.top);
@@ -1690,7 +1759,7 @@
         applyOuterElementBorders(descriptor, borders);
       }
       for (const tableElement of tableElements) {
-        if (!tableElement || tableElement === root) continue;
+        if (!tableElement) continue;
         const descriptor = getDescriptor(tableElement);
         if (!descriptor) continue;
         const csTable = window.getComputedStyle(tableElement);
@@ -1698,19 +1767,8 @@
         if (borders) {
           applyOuterElementBorders(descriptor, borders);
         }
-        const bgColor = colorToARGB(csTable.backgroundColor);
-        if (bgColor) {
-          tableBackgroundRegions.push({
-            rowStart: descriptor.rowStartIndex,
-            rowEnd: Math.max(descriptor.rowStartIndex + 1, descriptor.rowEndIndex),
-            colStart: descriptor.colStartIndex,
-            colEnd: Math.max(descriptor.colStartIndex + 1, descriptor.colEndIndex),
-            fill: { type: "pattern", pattern: "solid", fgColor: { argb: bgColor } }
-          });
-        }
       }
       propagateSharedBorders(cells);
-      applyBackgroundRegions(cells, tableBackgroundRegions);
       const columnWidthsPx = [];
       for (let i = 0; i < columnEdges.length - 1; i++) {
         const w = snapToPrecision(columnEdges[i + 1] - columnEdges[i]);
@@ -1788,43 +1846,42 @@
         img.addEventListener("error", onError, { once: true });
       });
     };
-    const blobToBase64 = (blob) => new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error("Failed to read blob as base64"));
-      reader.onload = () => {
-        const result = reader.result || "";
-        const [, base64] = String(result).split(",");
-        if (base64) {
-          resolve(base64);
-        } else {
-          reject(new Error("Empty base64 result"));
-        }
-      };
-      reader.readAsDataURL(blob);
-    });
-    const fetchImageAsBase64 = async (src) => {
+    const fetchImageAsBase64 = async (src, width, height) => {
       if (!src) return null;
       let url;
       try {
         url = new URL(src, window.location.href);
       } catch (err) {
-        warnLog("Invalid image URL, skip fetch fallback", src, err);
+        warnLog("Invalid image URL, skip fetch fallback", { code: "IMAGE_URL_INVALID", source: src, error: err });
         return null;
       }
       if (url.protocol === "file:") {
-        warnLog("Skipping fetch fallback for file:// URL (browser security restriction):", url.href);
+        warnLog("Skipping fetch fallback for file:// URL (browser security restriction)", { code: "IMAGE_FILE_UNSUPPORTED", source: url.href });
         return null;
       }
       try {
         const response = await fetch(url.href, { mode: "cors", signal: AbortSignal.timeout(CONFIG.IMAGE_TIMEOUT_MS) });
-        if (!response.ok) return null;
+        if (!response.ok) throw new Error("Image fetch returned HTTP " + response.status);
         const blob = await response.blob();
-        const base64 = await blobToBase64(blob);
-        const extension = blob.type && blob.type.split("/")[1] || "png";
-        debugLog("Fetched image via fallback", url.href, `(${extension})`);
-        return { base64, extension };
+        const objectUrl = URL.createObjectURL(blob);
+        try {
+          const image = new Image();
+          image.src = objectUrl;
+          await ensureImageLoaded(image);
+          const canvas = document.createElement("canvas");
+          canvas.width = width || image.naturalWidth;
+          canvas.height = height || image.naturalHeight;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Canvas 2D context unavailable");
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          const base64 = canvas.toDataURL("image/png").split(",")[1];
+          if (!base64) throw new Error("Empty base64 from fetched image");
+          return { base64, extension: "png" };
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
       } catch (err) {
-        warnLog("Fallback fetch-to-base64 failed", src, err);
+        warnLog("Fallback fetch-to-base64 failed", { code: "IMAGE_FETCH_FAILED", source: src, error: err });
         return null;
       }
     };
@@ -1834,7 +1891,7 @@
       try {
         await ensureImageLoaded(element);
       } catch (err) {
-        warnLog("Image failed to load", element.src, err);
+        warnLog("Image failed to load", { code: "IMAGE_LOAD_FAILED", source: element.currentSrc || element.src, error: err });
         return { ...job, error: err };
       }
       const imageScale = toPositiveNumber(IMAGE_SCALE) || 1;
@@ -1846,7 +1903,7 @@
       const ctx = canvas.getContext("2d");
       if (!ctx) {
         const err = new Error("Canvas 2D context unavailable");
-        errorLog(err.message, element.src);
+        errorLog(err.message, { code: "IMAGE_CANVAS_UNAVAILABLE", source: element.currentSrc || element.src });
         return { ...job, error: err };
       }
       try {
@@ -1861,13 +1918,13 @@
           extension: CONFIG.IMAGE_FORMAT === "image/png" ? "png" : "jpeg"
         };
       } catch (err) {
-        warnLog("Canvas toDataURL failed, trying fetch fallback", element.src, err);
-        const fallback = await fetchImageAsBase64(element.src);
+        warnLog("Canvas toDataURL failed, trying fetch fallback", { code: "IMAGE_CANVAS_FALLBACK", source: element.currentSrc || element.src, error: err });
+        const fallback = await fetchImageAsBase64(element.currentSrc || element.src, renderWidth, renderHeight);
         if (fallback) {
           debugLog("Fallback fetch succeeded for image", element.src, `base64Length=${fallback.base64.length}`);
           return { ...job, base64: fallback.base64, extension: fallback.extension };
         }
-        errorLog("Image conversion failed after fallback", element.src, err);
+        errorLog("Image conversion failed after fallback", { code: "IMAGE_CONVERSION_FAILED", source: element.currentSrc || element.src, error: err });
         return { ...job, error: err };
       }
     };
@@ -1916,7 +1973,7 @@
           return null;
       }
     };
-    const getCellImageAlignment = (cellModel) => {
+    const getCellImageAlignment = (cellModel, includeCss = true) => {
       if (!cellModel) return null;
       const element = cellModel.element;
       const attrName = CONFIG.IMAGE_ALIGNMENT_ATTR;
@@ -1927,6 +1984,7 @@
           return resolved;
         }
       }
+      if (!includeCss) return null;
       const horizontal = cellModel.styles && cellModel.styles.alignment && cellModel.styles.alignment.horizontal ? String(cellModel.styles.alignment.horizontal).toLowerCase() : null;
       switch (horizontal) {
         case "center":
@@ -1955,17 +2013,11 @@
       return {
         widthPx,
         heightPx,
+        columnEdges: columnEdges.slice(cellModel.colStart, cellModel.colEnd + 1).map((edge) => edge - leftEdge),
+        rowEdges: rowEdges.slice(cellModel.rowStart, cellModel.rowEnd + 1).map((edge) => edge - topEdge),
         startColIndex: sheetPosition.colStart - 1,
         startRowIndex: sheetPosition.rowStart - 1
       };
-    };
-    const clampWithin = (offsetPx, spanPx, limitPx) => {
-      if (!isFiniteNumber(offsetPx)) return 0;
-      const safeSpan = isFiniteNumber(spanPx) && spanPx > 0 ? spanPx : 0;
-      const safeLimit = isFiniteNumber(limitPx) && limitPx > 0 ? limitPx : 0;
-      if (!safeLimit) return 0;
-      if (safeSpan >= safeLimit) return 0;
-      return Math.max(0, Math.min(offsetPx, safeLimit - safeSpan));
     };
     const logLatestWorksheetImage = (worksheet) => {
       if (typeof worksheet?.getImages !== "function") {
@@ -1984,19 +2036,22 @@
       }
       debugLog("Worksheet image count", currentImages.length);
     };
+    const coordinateAt = (edges, offset, startIndex = 0) => {
+      const position = locateIndexAndOffset(edges, offset, true);
+      const span = edges[position.index + 1] - edges[position.index];
+      return startIndex + position.index + (span > 0 ? position.offset / span : 0);
+    };
     const addAlignedImage = (worksheet, workbook, job, metrics, offsetLeftPx, offsetTopPx, widthPx, heightPx) => {
       if (!metrics || widthPx <= 0 || heightPx <= 0) return false;
-      const extraLeft = 1e3;
-      const extraTop = 10;
-      const rawLeft = (offsetLeftPx || 0) + extraLeft;
-      const rawTop = (offsetTopPx || 0) + extraTop;
-      const safeLeft = clampWithin(rawLeft, widthPx, metrics.widthPx);
-      const safeTop = clampWithin(rawTop, heightPx, metrics.heightPx);
-      const colRatio = metrics.widthPx > 0 ? safeLeft / metrics.widthPx : 0;
-      const rowRatio = metrics.heightPx > 0 ? safeTop / metrics.heightPx : 0;
+      const tolerance = CONFIG.EDGE_TOLERANCE_PX;
+      if (offsetLeftPx + widthPx > metrics.widthPx + tolerance || offsetTopPx + heightPx > metrics.heightPx + tolerance) {
+        throw new Error("Image alignment exceeds its cell; enlarge the HTML cell, reduce imageWidthScale, or use precise placement");
+      }
+      const safeLeft = Math.max(0, offsetLeftPx || 0);
+      const safeTop = Math.max(0, offsetTopPx || 0);
       const tl = {
-        col: metrics.startColIndex + colRatio,
-        row: metrics.startRowIndex + rowRatio
+        col: coordinateAt(metrics.columnEdges, safeLeft, metrics.startColIndex),
+        row: coordinateAt(metrics.rowEdges, safeTop, metrics.startRowIndex)
       };
       const imgId = workbook.addImage({
         base64: job.base64,
@@ -2022,8 +2077,6 @@
         return false;
       }
       const spacingPx = Math.max(0, snapToPrecision(CONFIG.IMAGE_SPACING_PX || 0));
-      const maxPerRowConfigured = toPositiveNumber(CONFIG.IMAGE_MAX_PER_ROW);
-      const maxPerRow = maxPerRowConfigured ? Math.max(1, Math.floor(maxPerRowConfigured)) : Number.POSITIVE_INFINITY;
       const finalImageScale = toPositiveNumber(CONFIG.IMAGE_WIDTH_SCALE) || 1;
       const rows = [];
       let currentRow = { items: [], width: 0, height: 0 };
@@ -2031,7 +2084,7 @@
         const widthPx = Math.max(1, job.width * finalImageScale);
         const heightPx = Math.max(1, job.height * finalImageScale);
         const item = { job, widthPx, heightPx };
-        const needsWrap = currentRow.items.length > 0 && currentRow.width + spacingPx + widthPx > metrics.widthPx || currentRow.items.length >= maxPerRow;
+        const needsWrap = currentRow.items.length > 0 && currentRow.width + spacingPx + widthPx > metrics.widthPx;
         if (needsWrap) {
           rows.push(currentRow);
           currentRow = { items: [], width: 0, height: 0 };
@@ -2124,22 +2177,10 @@
           extension: job.extension
         });
         const parentCell = job.parentCell;
-        const sheetPosition = parentCell?.sheetPosition;
-        if (!sheetPosition) continue;
-        const { colStart, rowStart } = sheetPosition;
-        const startColIndex = colStart - 1;
-        const startRowIndex = rowStart - 1;
-        const cellHtmlLeft = htmlColumnEdges[startColIndex] || 0;
-        const cellHtmlTop = htmlRowEdges[startRowIndex] || 0;
-        const offsetX = job.left - cellHtmlLeft + (CONFIG.IMAGE_OFFSET_LEFT_PX || 0);
-        const offsetY = job.top - cellHtmlTop + (CONFIG.IMAGE_OFFSET_TOP_PX || 0);
-        const anchorCellHtmlWidth = (htmlColumnEdges[startColIndex + 1] || cellHtmlLeft) - cellHtmlLeft;
-        const anchorCellHtmlHeight = (htmlRowEdges[startRowIndex + 1] || cellHtmlTop) - cellHtmlTop;
-        const colRatio = anchorCellHtmlWidth > 0 ? offsetX / anchorCellHtmlWidth : 0;
-        const rowRatio = anchorCellHtmlHeight > 0 ? offsetY / anchorCellHtmlHeight : 0;
+        if (!parentCell?.sheetPosition) continue;
         const tl = {
-          col: startColIndex + colRatio,
-          row: startRowIndex + rowRatio
+          col: coordinateAt(htmlColumnEdges, job.left),
+          row: coordinateAt(htmlRowEdges, job.top)
         };
         const finalImageScale = toPositiveNumber(CONFIG.IMAGE_WIDTH_SCALE) || 1;
         const ext = {
@@ -2189,7 +2230,7 @@
       const defaultAlignment = toImageAlignment(CONFIG.IMAGE_ALIGNMENT) || "inline";
       for (const [cellModel, images] of cellGroups.entries()) {
         if (!Array.isArray(images) || !images.length) continue;
-        const cellAlignment = getCellImageAlignment(cellModel) || defaultAlignment;
+        const cellAlignment = getCellImageAlignment(cellModel, !CONFIG.IMAGE_ALIGNMENT_EXPLICIT) || defaultAlignment;
         const placed = placeImagesWithAlignment(worksheet, workbook, images, cellModel, layoutModel, cellAlignment);
         if (!placed) {
           preciseFallbackJobs.push(...images);
@@ -2199,7 +2240,7 @@
         placeImagesPrecisely(worksheet, workbook, preciseFallbackJobs, layoutModel);
       }
     };
-    return { ensureImageLoaded, blobToBase64, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, clampWithin, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
+    return { ensureImageLoaded, fetchImageAsBase64, convertImageJob, locateIndexAndOffset, clampOffset, toImageAlignment, getCellImageAlignment, getCellPlacementMetrics, logLatestWorksheetImage, addAlignedImage, placeImagesInline, placeImagesStacked, placeSingleImageCentered, placeImagesWithAlignment, placeImagesPrecisely, placeImages };
   }
   async function mapWithConcurrency(items, limit, mapper) {
     const results = new Array(items.length);
@@ -2393,13 +2434,14 @@
       if (failedImages.length) {
         failedImages.forEach((item) => {
           warnLog("Image skipped (no base64)", {
-            src: item.element?.src || "(unknown src)",
+            code: "IMAGE_SKIPPED",
+            source: item.element?.currentSrc || item.element?.src || "(unknown src)",
             width: item.width,
             height: item.height,
             error: item.error ? item.error.message || String(item.error) : "(no error message)"
           });
         });
-        warnLog("Images could not be embedded", failedImages.map((f) => f.element?.src || "(unknown src)"));
+        warnLog("Images could not be embedded", { code: "IMAGE_EMBED_FAILED", count: failedImages.length });
       }
     };
     const logWorkbookMediaSummary = (workbook) => {
@@ -2414,7 +2456,7 @@
         })) : [];
         debugLog("Workbook media summary", { mediaCount, worksheetSummaries });
       } catch (err) {
-        warnLog("Failed to inspect workbook model", err);
+        warnLog("Failed to inspect workbook model", { code: "WORKBOOK_INSPECTION_FAILED", error: err });
       }
     };
     const writeWorkbookToBuffer = async (workbook) => {
@@ -2425,7 +2467,7 @@
         debugLog("Workbook buffer size", buffer && (buffer.byteLength || buffer.length || 0));
         return buffer;
       } catch (err) {
-        errorLog("writeBuffer failed", err);
+        errorLog("writeBuffer failed", { code: "WORKBOOK_WRITE_FAILED", error: err });
         throw err;
       }
     };
@@ -2465,8 +2507,17 @@
     if (!ExcelJS?.Workbook) throw new Error("Load ExcelJS separately or supply options.exceljs");
     const { config: CONFIG, currency, locale } = resolveOptions(root, options);
     const warnings = [];
-    const warnLog = (message) => {
-      const warning = { code: "EXPORT_WARNING", message: String(message) };
+    const warnLog = (message, context = {}) => {
+      const warning = { code: "EXPORT_WARNING", ...context, message: String(message) };
+      if (warning.error instanceof Error) warning.error = warning.error.message;
+      if (warning.source) {
+        try {
+          const url = new URL(warning.source, document.baseURI);
+          warning.source = ["http:", "https:"].includes(url.protocol) ? url.origin + url.pathname : url.protocol;
+        } catch {
+          warning.source = "(invalid image URL)";
+        }
+      }
       warnings.push(warning);
       options.onWarning?.(warning);
     };
@@ -2484,38 +2535,44 @@
       mapWithConcurrency
     };
     Object.assign(dependencies, createLayoutMetrics(dependencies));
-    Object.assign(dependencies, createStyles(dependencies));
     Object.assign(dependencies, createDom(dependencies));
+    Object.assign(dependencies, createStyles(dependencies));
     Object.assign(dependencies, createLayout(dependencies));
     Object.assign(dependencies, createImages(dependencies));
     Object.assign(dependencies, createWorkbookWriter(dependencies));
     let fontTimer;
     if (document.fonts?.ready) {
-      await Promise.race([
-        document.fonts.ready,
-        new Promise((resolve) => {
-          fontTimer = setTimeout(() => {
-            warnLog("Font readiness timed out; using available font metrics");
-            resolve();
-          }, CONFIG.IMAGE_TIMEOUT_MS);
-        })
-      ]);
-      clearTimeout(fontTimer);
+      let timedOut;
+      try {
+        timedOut = await Promise.race([
+          document.fonts.ready.then(() => false),
+          new Promise((resolve) => {
+            fontTimer = setTimeout(() => resolve(true), CONFIG.IMAGE_TIMEOUT_MS);
+          })
+        ]);
+      } finally {
+        clearTimeout(fontTimer);
+      }
+      if (timedOut) warnLog("Font readiness timed out; using available font metrics", { code: "FONT_TIMEOUT" });
     }
     await mapWithConcurrency(
       Array.from(root.querySelectorAll("img")),
       CONFIG.IMAGE_CONCURRENCY,
       async (image) => {
-        if (dependencies.isElementBlacklisted(image, root)) return;
+        if (dependencies.isElementExcluded(image, root)) return;
         try {
           await dependencies.ensureImageLoaded(image);
-        } catch {
-          warnLog("An image did not load before layout measurement");
+        } catch (error) {
+          warnLog("An image did not load before layout measurement", {
+            code: "IMAGE_PRELOAD_FAILED",
+            source: image.currentSrc || image.src,
+            error
+          });
         }
       }
     );
     const layoutModel = dependencies.buildLayoutModel(root);
-    if (!layoutModel.cells.length) throw new Error("No visible table cells to export");
+    if (!layoutModel.cells.length && !layoutModel.images.length) throw new Error("No visible table cells to export");
     const workbook = dependencies.createWorkbook();
     const worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
     await dependencies.processAndPlaceImages(workbook, worksheet, layoutModel);

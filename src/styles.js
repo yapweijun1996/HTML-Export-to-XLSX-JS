@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createStyles(dependencies) {
-  const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
+  const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
 	const COLOR_CANVAS_CTX = (function () {
 		if (typeof document === 'undefined') return null;
 		const canvas = document.createElement('canvas');
@@ -363,61 +363,44 @@ export function createStyles(dependencies) {
 		return isFiniteNumber(parsed) ? parsed : 400;
 	};
 
-	const isCellUniformlyBold = (cell, baseWeight) => {
-		if (!cell || typeof document === 'undefined' || typeof window === 'undefined') return false;
-		if (typeof document.createTreeWalker !== 'function') return false;
-		const showText = typeof NodeFilter !== 'undefined' ? NodeFilter.SHOW_TEXT : 4;
-		let walker;
-		try {
-			walker = document.createTreeWalker(cell, showText, null);
-		} catch (err) {
-			return false;
-		}
-		let sawText = false;
+	const visibleTextCache = new WeakMap();
+	const visibleTextNodes = cell => {
+		if (!cell || typeof document === 'undefined') return [];
+		if (visibleTextCache.has(cell)) return visibleTextCache.get(cell);
+		const nodes = [];
+		const table = cell.closest('table');
+		const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
 		while (walker.nextNode()) {
-			const textNode = walker.currentNode;
-			if (!textNode || !textNode.textContent || !textNode.textContent.trim()) continue;
-			sawText = true;
-			let effectiveWeight = baseWeight;
-			let ancestor = textNode.parentElement;
-			while (ancestor && ancestor !== cell) {
-				const ancestorStyle = window.getComputedStyle(ancestor);
-				const ancestorWeight = normalizeFontWeight(ancestorStyle.fontWeight);
-				if (ancestorWeight >= 600) {
-					effectiveWeight = ancestorWeight;
-					break;
-				}
-				ancestor = ancestor.parentElement;
-			}
-			if (effectiveWeight < 600) {
-				return false;
-			}
+			const node = walker.currentNode;
+			if (!node.textContent.trim() || node.parentElement.closest('table') !== table
+				|| dependencies.isElementExcluded(node.parentElement, cell)) continue;
+			nodes.push(node);
 		}
-		return sawText;
+		visibleTextCache.set(cell, nodes);
+		return nodes;
+	};
+
+	const isCellUniformlyBold = (cell, baseWeight) => {
+		const nodes = visibleTextNodes(cell);
+		return nodes.length ? nodes.every(node => normalizeFontWeight(getElementStyle(node.parentElement).fontWeight) >= 600)
+			: baseWeight >= 600;
 	};
 
 	const resolveFontSizePx = (cell, cellStyle) => {
-		const baseSize = parseFloat(cellStyle.fontSize) || 0;
-		if (!cell || typeof document === 'undefined' || typeof window === 'undefined') return baseSize;
-		const ELEMENT_NODE = typeof Node !== 'undefined' ? Node.ELEMENT_NODE : 1;
-		let walker;
-		try {
-			const showElements = typeof NodeFilter !== 'undefined' ? NodeFilter.SHOW_ELEMENT : ELEMENT_NODE;
-			walker = document.createTreeWalker(cell, showElements, null);
-		} catch (err) {
-			return baseSize;
-		}
-		let maxSize = baseSize;
-		while (walker.nextNode()) {
-			const node = walker.currentNode;
-			if (!node || (node.nodeType !== ELEMENT_NODE && node.nodeType !== 1)) continue;
-			const nodeStyle = window.getComputedStyle(node);
-			const childSize = parseFloat(nodeStyle.fontSize) || 0;
-			if (childSize > maxSize) {
-				maxSize = childSize;
-			}
-		}
-		return maxSize;
+		const sizes = visibleTextNodes(cell).map(node => parseFloat(getElementStyle(node.parentElement).fontSize) || 0);
+		return sizes.length ? sizes.reduce((maximum, size) => Math.max(maximum, size), 0) : parseFloat(cellStyle.fontSize) || 0;
+	};
+
+	const backgroundCaches = new WeakMap();
+	const extractBackground = (element, root) => {
+		if (!element) return null;
+		if (!backgroundCaches.has(root)) backgroundCaches.set(root, new WeakMap());
+		const cache = backgroundCaches.get(root);
+		if (cache.has(element)) return cache.get(element);
+		let color = dependencies.isElementExcluded(element, root) ? null : colorToARGB(getElementStyle(element).backgroundColor);
+		if (!color && element !== root) color = extractBackground(element.parentElement, root);
+		cache.set(element, color);
+		return color;
 	};
 
 	const extractFont = (cell, cs) => {
@@ -425,14 +408,7 @@ export function createStyles(dependencies) {
 		const name = families[0] || 'Arial';
 		const sizePx = resolveFontSizePx(cell, cs);
 		const weight = normalizeFontWeight(cs.fontWeight);
-		let bold = weight >= 600;
-		if (!bold) {
-			try {
-				bold = isCellUniformlyBold(cell, weight);
-			} catch (err) {
-				bold = false;
-			}
-		}
+		const bold = isCellUniformlyBold(cell, weight);
 
 		// 改进字体大小转换逻辑，确保最小字体大小
 		let excelFontSize;
@@ -488,13 +464,15 @@ export function createStyles(dependencies) {
 			const walker = document.createTreeWalker(cell, showText, null);
 			while (walker.nextNode()) {
 				const node = walker.currentNode;
-				if (!node || !node.textContent || !node.textContent.trim()) continue;
+				if (!node || !node.textContent || !node.textContent.trim()
+					|| dependencies.isElementExcluded(node.parentElement, cell)
+					|| node.parentElement.closest('table') !== cell.closest('table')) continue;
 
 				let current = node.parentElement;
 				let extraLeft = 0;
 				let extraRight = 0;
 				while (current && current !== cell) {
-					const style = window.getComputedStyle(current);
+					const style = getElementStyle(current);
 					extraLeft +=
 					parseCssPixelValue(style.paddingLeft) +
 					parseCssPixelValue(style.marginLeft) +
@@ -543,13 +521,15 @@ export function createStyles(dependencies) {
 			const walker = document.createTreeWalker(cell, showText, null);
 			while (walker.nextNode()) {
 				const node = walker.currentNode;
-				if (!node || !node.textContent || !node.textContent.trim()) continue;
+				if (!node || !node.textContent || !node.textContent.trim()
+					|| dependencies.isElementExcluded(node.parentElement, cell)
+					|| node.parentElement.closest('table') !== cell.closest('table')) continue;
 
 				let current = node.parentElement;
 				let extraTop = 0;
 				let extraBottom = 0;
 				while (current && current !== cell) {
-					const style = window.getComputedStyle(current);
+					const style = getElementStyle(current);
 					extraTop +=
 					parseCssPixelValue(style.paddingTop) +
 					parseCssPixelValue(style.marginTop) +
@@ -599,9 +579,9 @@ export function createStyles(dependencies) {
 		};
 
 		const horizontalMap = {
-			start: 'left',
+			start: cs.direction === 'rtl' ? 'right' : 'left',
 			left: 'left',
-			end: 'right',
+			end: cs.direction === 'rtl' ? 'left' : 'right',
 			right: 'right',
 			center: 'center',
 			justify: 'justify'
@@ -651,5 +631,5 @@ export function createStyles(dependencies) {
 	};
 
 
-  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
 }
