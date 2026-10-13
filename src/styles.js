@@ -684,7 +684,13 @@ export function createStyles(dependencies) {
 		const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || undefined;
 		const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || undefined;
 		const font = extractFont(cell, cs);
-		const singleLineCaption = (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);
+		// Keep a complete email address and optional contact note together, while
+		// retaining explicit line breaks and ordinary multiline text.
+		const emailLine = CONFIG.PRESERVE_EMAIL_ADDRESSES && typeof textValue === 'string'
+			&& !/[\r\n]/.test(textValue)
+			&& /^[^\s@]+@[^\s@]+\.[^\s@]+(?:\s+[（(][^\r\n]*[）)])?$/u.test(textValue.trim());
+		const singleLineCaption = emailLine || (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline)
+			&& isSingleLineText(cell, textValue);
 		const wrapText = singleLineCaption ? false : cs.whiteSpace !== 'nowrap' || Boolean(textValue?.includes('\n'));
 
 		const alignment = {
@@ -692,7 +698,7 @@ export function createStyles(dependencies) {
 			vertical,
 			wrapText
 		};
-		// Preserve a visibly single-line caption within the original Excel grid.
+		// Fit the selected single-line text within the original Excel grid.
 		if (singleLineCaption) alignment.shrinkToFit = true;
 
 		const padding = computeEffectiveHorizontalPadding(cell, cs);

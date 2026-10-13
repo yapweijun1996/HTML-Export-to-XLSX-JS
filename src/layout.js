@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createLayout(dependencies) {
-  const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
+  const { CONFIG, collectDomSnapshot, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
 	const buildLayoutModel = (root, preserveEdges = false) => {
 		const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root, preserveEdges);
 
@@ -205,19 +205,6 @@ export function createLayout(dependencies) {
 				top: snapToPrecision(rect.top + window.scrollY - rootTop) });
 		}
 
-		const computedStyleCache = new WeakMap();
-		const getCachedComputedStyle = (element) => {
-			if (!element || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
-				return null;
-			}
-			let cached = computedStyleCache.get(element);
-			if (!cached) {
-				cached = window.getComputedStyle(element);
-				computedStyleCache.set(element, cached);
-			}
-			return cached;
-		};
-
 		const pushDeferredBorderInstruction = (descriptor, side, style) => {
 			if (!descriptor || !style) return;
 			deferredBorders.push({
@@ -230,182 +217,11 @@ export function createLayout(dependencies) {
 			});
 		};
 
-		const mergeBorderStyle = (target, side, borderStyle) => {
-			if (!borderStyle) return;
-			target.styles.border = target.styles.border || {};
-			// Only apply the border if the target cell doesn't already have one on this side.
-			// This prevents outer table borders from overwriting inner cell borders.
-			if (!target.styles.border[side]) {
-				target.styles.border[side] = { ...borderStyle };
-			}
-		};
-
-		const propagateSharedBorders = (cells) => {
-			const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 1);
-			for (const cell of cells) {
-				const border = cell.styles?.border;
-				if (!border) continue;
-				const cellLeft = cell.bounds.left;
-				const cellRight = cell.bounds.left + cell.bounds.width;
-				const cellTop = cell.bounds.top;
-				const cellBottom = cell.bounds.top + cell.bounds.height;
-
-				if (border.right) {
-					for (const neighbor of cells) {
-						if (neighbor === cell) continue;
-						const neighborLeft = neighbor.bounds.left;
-						const neighborTop = neighbor.bounds.top;
-						const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-						const verticalOverlap = neighborBottom > cellTop && neighborTop < cellBottom;
-						if (!verticalOverlap) continue;
-						if (Math.abs(neighborLeft - cellRight) > tolerance) continue;
-						neighbor.styles.border = neighbor.styles.border || {};
-						if (!neighbor.styles.border.left) {
-							neighbor.styles.border.left = { ...border.right };
-						}
-					}
-				}
-
-				if (border.left) {
-					for (const neighbor of cells) {
-						if (neighbor === cell) continue;
-						const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-						const neighborTop = neighbor.bounds.top;
-						const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-						const verticalOverlap = neighborBottom > cellTop && neighborTop < cellBottom;
-						if (!verticalOverlap) continue;
-						if (Math.abs(neighborRight - cellLeft) > tolerance) continue;
-						neighbor.styles.border = neighbor.styles.border || {};
-						if (!neighbor.styles.border.right) {
-							neighbor.styles.border.right = { ...border.left };
-						}
-					}
-				}
-
-				if (border.bottom) {
-					for (const neighbor of cells) {
-						if (neighbor === cell) continue;
-						const neighborTop = neighbor.bounds.top;
-						const neighborLeft = neighbor.bounds.left;
-						const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-						const horizontalOverlap = neighborRight > cellLeft && neighborLeft < cellRight;
-						if (!horizontalOverlap) continue;
-						if (Math.abs(neighborTop - cellBottom) > tolerance) continue;
-						neighbor.styles.border = neighbor.styles.border || {};
-						if (!neighbor.styles.border.top) {
-							neighbor.styles.border.top = { ...border.bottom };
-						}
-					}
-				}
-
-				if (border.top) {
-					for (const neighbor of cells) {
-						if (neighbor === cell) continue;
-						const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-						const neighborLeft = neighbor.bounds.left;
-						const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-						const horizontalOverlap = neighborRight > cellLeft && neighborLeft < cellRight;
-						if (!horizontalOverlap) continue;
-						if (Math.abs(neighborBottom - cellTop) > tolerance) continue;
-						neighbor.styles.border = neighbor.styles.border || {};
-						if (!neighbor.styles.border.bottom) {
-							neighbor.styles.border.bottom = { ...border.top };
-						}
-					}
-				}
-			}
-		};
-
-
 		const applyOuterElementBorders = (descriptor, borders) => {
 			if (!descriptor || !borders) return;
-
-			pushDeferredBorderInstruction(descriptor, 'top', borders.top);
-			pushDeferredBorderInstruction(descriptor, 'bottom', borders.bottom);
-			pushDeferredBorderInstruction(descriptor, 'left', borders.left);
-			pushDeferredBorderInstruction(descriptor, 'right', borders.right);
-
-			const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 2);
-			const outerLeft = descriptor.left;
-			const outerRight = descriptor.left + descriptor.width;
-			const outerTop = descriptor.top;
-			const outerBottom = descriptor.top + descriptor.height;
-
-			const inRange = (cell) => {
-				if (!cell?.bounds) return false;
-				const cellLeft = cell.bounds.left;
-				const cellRight = cell.bounds.left + cell.bounds.width;
-				const cellTop = cell.bounds.top;
-				const cellBottom = cell.bounds.top + cell.bounds.height;
-				return (
-				cellLeft >= outerLeft - tolerance &&
-				cellRight <= outerRight + tolerance &&
-				cellTop >= outerTop - tolerance &&
-				cellBottom <= outerBottom + tolerance
-				);
-			};
-
-			const alignsWithOuterEdge = (cell, side) => {
-				if (!cell?.bounds) return false;
-				const diff = (() => {
-					switch (side) {
-						case 'left':
-						return Math.abs(cell.bounds.left - outerLeft);
-						case 'right':
-						return Math.abs(cell.bounds.left + cell.bounds.width - outerRight);
-						case 'top':
-						return Math.abs(cell.bounds.top - outerTop);
-						case 'bottom':
-						default:
-						return Math.abs(cell.bounds.top + cell.bounds.height - outerBottom);
-					}
-				})();
-				if (diff <= tolerance) return true;
-
-				const csCell = getCachedComputedStyle(cell.element);
-				if (!csCell) return diff <= tolerance;
-
-				if (side === 'left' || side === 'right') {
-					const padding = computeEffectiveHorizontalPadding(cell.element, csCell);
-					const allowance = side === 'left' ? padding.left : padding.right;
-					return diff <= Math.max(tolerance, allowance + CONFIG.EDGE_TOLERANCE_PX);
-				}
-
-				const padding = computeEffectiveVerticalPadding(cell.element, csCell);
-				const allowance = side === 'top' ? padding.top : padding.bottom;
-				return diff <= Math.max(tolerance, allowance + CONFIG.EDGE_TOLERANCE_PX);
-			};
-
-			if (borders.top) {
-				const topCells = cells.filter((c) => inRange(c) && alignsWithOuterEdge(c, 'top'));
-				for (const cell of topCells) {
-					mergeBorderStyle(cell, 'top', borders.top);
-				}
-			}
-
-			if (borders.bottom) {
-				const bottomCells = cells.filter(
-				(c) => inRange(c) && alignsWithOuterEdge(c, 'bottom')
-				);
-				for (const cell of bottomCells) {
-					mergeBorderStyle(cell, 'bottom', borders.bottom);
-				}
-			}
-
-			if (borders.left) {
-				const leftCells = cells.filter((c) => inRange(c) && alignsWithOuterEdge(c, 'left'));
-				for (const cell of leftCells) {
-					mergeBorderStyle(cell, 'left', borders.left);
-				}
-			}
-
-			if (borders.right) {
-				const rightCells = cells.filter(
-				(c) => inRange(c) && alignsWithOuterEdge(c, 'right')
-				);
-				for (const cell of rightCells) {
-					mergeBorderStyle(cell, 'right', borders.right);
-				}
+			// Outer borders belong to their measured perimeter, not nearby child cells.
+			for (const side of ['top', 'bottom', 'left', 'right']) {
+				pushDeferredBorderInstruction(descriptor, side, borders[side]);
 			}
 		};
 
@@ -428,8 +244,6 @@ export function createLayout(dependencies) {
 			}
 
 		}
-
-		propagateSharedBorders(cells);
 
 		const columnWidthsPx = [];
 		for (let i = 0; i < columnEdges.length - 1; i++) {

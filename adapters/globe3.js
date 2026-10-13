@@ -6,7 +6,8 @@ const quantityColumnsByExport = new WeakMap();
 function quantityCellType(root, locale, element, text, context) {
     const cell = element.closest('td, th');
     const rowTable = cell?.closest('table.rowitem, table[id^="row"]');
-    if (!rowTable || (!rowTable.classList.contains('rowitem') && !/^row\d+$/.test(rowTable.id))
+    // The print engine marks completed rows with an _processed ID suffix.
+    if (!rowTable || (!rowTable.classList.contains('rowitem') && !/^row\d+(?:_processed)?$/.test(rowTable.id))
         || parseLocalizedNumber(text, locale) === null) return;
     const bounds = cell.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return;
@@ -19,7 +20,7 @@ function quantityCellType(root, locale, element, text, context) {
             if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
             const headerTable = header.closest('table.rowheader, table.rowitem, table[id^="row"]');
             if (!headerTable || (!headerTable.matches('table.rowheader, table.rowitem')
-                && headerTable.id !== 'rowheader' && !/^row\d+$/.test(headerTable.id))) continue;
+                && headerTable.id !== 'rowheader' && !/^row\d+(?:_processed)?$/.test(headerTable.id))) continue;
             columns.push(header.getBoundingClientRect());
         }
         quantityColumnsByExport.set(context, columns);
@@ -51,6 +52,7 @@ export function installGlobe3(api, documentRoot = document) {
         imageWidthScale: 1,
         imagePlacement: 'precise',
         preserveSingleLine: true,
+        preserveEmailAddresses: true,
         preserveRichText: true,
         includeBackgrounds: false,
         pageSetup: {

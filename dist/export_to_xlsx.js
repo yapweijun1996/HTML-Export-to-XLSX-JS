@@ -242,6 +242,7 @@
     PAGE_BREAK_SELECTOR: "[data-xlsx-page-break]",
     RESPECT_PAGE_BREAKS: true,
     PRESERVE_SINGLE_LINE: false,
+    PRESERVE_EMAIL_ADDRESSES: false,
     PRESERVE_RICH_TEXT: false,
     INCLUDE_BACKGROUNDS: true,
     NORMAL_FONT: null,
@@ -298,6 +299,7 @@
     exclude: "BLACKLIST_SELECTORS",
     minColumnWidthPx: "MIN_COL_WIDTH_PX",
     preserveSingleLine: "PRESERVE_SINGLE_LINE",
+    preserveEmailAddresses: "PRESERVE_EMAIL_ADDRESSES",
     preserveRichText: "PRESERVE_RICH_TEXT",
     includeBackgrounds: "INCLUDE_BACKGROUNDS",
     debug: "DEBUG",
@@ -344,7 +346,7 @@
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError("imageConcurrency must be an integer");
     if (typeof config.RESPECT_PAGE_BREAKS !== "boolean") throw new TypeError("respectPageBreaks must be a boolean");
-    for (const key of ["preserveSingleLine", "preserveRichText", "includeBackgrounds"]) {
+    for (const key of ["preserveSingleLine", "preserveEmailAddresses", "preserveRichText", "includeBackgrounds"]) {
       if (typeof config[mappings[key]] !== "boolean") throw new TypeError(key + " must be a boolean");
     }
     if (options.currencyDisplay !== void 0 && !["code", "source"].includes(options.currencyDisplay)) {
@@ -1172,7 +1174,8 @@
       const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || void 0;
       const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || void 0;
       const font = extractFont(cell, cs);
-      const singleLineCaption = (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);
+      const emailLine = CONFIG.PRESERVE_EMAIL_ADDRESSES && typeof textValue === "string" && !/[\r\n]/.test(textValue) && /^[^\s@]+@[^\s@]+\.[^\s@]+(?:\s+[（(][^\r\n]*[）)])?$/u.test(textValue.trim());
+      const singleLineCaption = emailLine || (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);
       const wrapText = singleLineCaption ? false : cs.whiteSpace !== "nowrap" || Boolean(textValue?.includes("\n"));
       const alignment = {
         horizontal,
@@ -1518,7 +1521,7 @@
 
   // src/layout.js
   function createLayout(dependencies) {
-    const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue: parseCellValue2, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
+    const { CONFIG, collectDomSnapshot, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue: parseCellValue2, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
     const buildLayoutModel = (root, preserveEdges = false) => {
       const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root, preserveEdges);
       const describeCell = (cell) => {
@@ -1709,18 +1712,6 @@
           top: snapToPrecision(rect.top + window.scrollY - rootTop)
         });
       }
-      const computedStyleCache = /* @__PURE__ */ new WeakMap();
-      const getCachedComputedStyle = (element) => {
-        if (!element || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
-          return null;
-        }
-        let cached = computedStyleCache.get(element);
-        if (!cached) {
-          cached = window.getComputedStyle(element);
-          computedStyleCache.set(element, cached);
-        }
-        return cached;
-      };
       const pushDeferredBorderInstruction = (descriptor, side, style) => {
         if (!descriptor || !style) return;
         deferredBorders.push({
@@ -1732,157 +1723,10 @@
           colEnd: Math.max(descriptor.colStartIndex + 1, descriptor.colEndIndex)
         });
       };
-      const mergeBorderStyle = (target, side, borderStyle) => {
-        if (!borderStyle) return;
-        target.styles.border = target.styles.border || {};
-        if (!target.styles.border[side]) {
-          target.styles.border[side] = { ...borderStyle };
-        }
-      };
-      const propagateSharedBorders = (cells2) => {
-        const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 1);
-        for (const cell of cells2) {
-          const border = cell.styles?.border;
-          if (!border) continue;
-          const cellLeft = cell.bounds.left;
-          const cellRight = cell.bounds.left + cell.bounds.width;
-          const cellTop = cell.bounds.top;
-          const cellBottom = cell.bounds.top + cell.bounds.height;
-          if (border.right) {
-            for (const neighbor of cells2) {
-              if (neighbor === cell) continue;
-              const neighborLeft = neighbor.bounds.left;
-              const neighborTop = neighbor.bounds.top;
-              const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-              const verticalOverlap = neighborBottom > cellTop && neighborTop < cellBottom;
-              if (!verticalOverlap) continue;
-              if (Math.abs(neighborLeft - cellRight) > tolerance) continue;
-              neighbor.styles.border = neighbor.styles.border || {};
-              if (!neighbor.styles.border.left) {
-                neighbor.styles.border.left = { ...border.right };
-              }
-            }
-          }
-          if (border.left) {
-            for (const neighbor of cells2) {
-              if (neighbor === cell) continue;
-              const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-              const neighborTop = neighbor.bounds.top;
-              const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-              const verticalOverlap = neighborBottom > cellTop && neighborTop < cellBottom;
-              if (!verticalOverlap) continue;
-              if (Math.abs(neighborRight - cellLeft) > tolerance) continue;
-              neighbor.styles.border = neighbor.styles.border || {};
-              if (!neighbor.styles.border.right) {
-                neighbor.styles.border.right = { ...border.left };
-              }
-            }
-          }
-          if (border.bottom) {
-            for (const neighbor of cells2) {
-              if (neighbor === cell) continue;
-              const neighborTop = neighbor.bounds.top;
-              const neighborLeft = neighbor.bounds.left;
-              const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-              const horizontalOverlap = neighborRight > cellLeft && neighborLeft < cellRight;
-              if (!horizontalOverlap) continue;
-              if (Math.abs(neighborTop - cellBottom) > tolerance) continue;
-              neighbor.styles.border = neighbor.styles.border || {};
-              if (!neighbor.styles.border.top) {
-                neighbor.styles.border.top = { ...border.bottom };
-              }
-            }
-          }
-          if (border.top) {
-            for (const neighbor of cells2) {
-              if (neighbor === cell) continue;
-              const neighborBottom = neighbor.bounds.top + neighbor.bounds.height;
-              const neighborLeft = neighbor.bounds.left;
-              const neighborRight = neighbor.bounds.left + neighbor.bounds.width;
-              const horizontalOverlap = neighborRight > cellLeft && neighborLeft < cellRight;
-              if (!horizontalOverlap) continue;
-              if (Math.abs(neighborBottom - cellTop) > tolerance) continue;
-              neighbor.styles.border = neighbor.styles.border || {};
-              if (!neighbor.styles.border.bottom) {
-                neighbor.styles.border.bottom = { ...border.top };
-              }
-            }
-          }
-        }
-      };
       const applyOuterElementBorders = (descriptor, borders) => {
         if (!descriptor || !borders) return;
-        pushDeferredBorderInstruction(descriptor, "top", borders.top);
-        pushDeferredBorderInstruction(descriptor, "bottom", borders.bottom);
-        pushDeferredBorderInstruction(descriptor, "left", borders.left);
-        pushDeferredBorderInstruction(descriptor, "right", borders.right);
-        const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 2);
-        const outerLeft = descriptor.left;
-        const outerRight = descriptor.left + descriptor.width;
-        const outerTop = descriptor.top;
-        const outerBottom = descriptor.top + descriptor.height;
-        const inRange = (cell) => {
-          if (!cell?.bounds) return false;
-          const cellLeft = cell.bounds.left;
-          const cellRight = cell.bounds.left + cell.bounds.width;
-          const cellTop = cell.bounds.top;
-          const cellBottom = cell.bounds.top + cell.bounds.height;
-          return cellLeft >= outerLeft - tolerance && cellRight <= outerRight + tolerance && cellTop >= outerTop - tolerance && cellBottom <= outerBottom + tolerance;
-        };
-        const alignsWithOuterEdge = (cell, side) => {
-          if (!cell?.bounds) return false;
-          const diff = (() => {
-            switch (side) {
-              case "left":
-                return Math.abs(cell.bounds.left - outerLeft);
-              case "right":
-                return Math.abs(cell.bounds.left + cell.bounds.width - outerRight);
-              case "top":
-                return Math.abs(cell.bounds.top - outerTop);
-              case "bottom":
-              default:
-                return Math.abs(cell.bounds.top + cell.bounds.height - outerBottom);
-            }
-          })();
-          if (diff <= tolerance) return true;
-          const csCell = getCachedComputedStyle(cell.element);
-          if (!csCell) return diff <= tolerance;
-          if (side === "left" || side === "right") {
-            const padding2 = computeEffectiveHorizontalPadding(cell.element, csCell);
-            const allowance2 = side === "left" ? padding2.left : padding2.right;
-            return diff <= Math.max(tolerance, allowance2 + CONFIG.EDGE_TOLERANCE_PX);
-          }
-          const padding = computeEffectiveVerticalPadding(cell.element, csCell);
-          const allowance = side === "top" ? padding.top : padding.bottom;
-          return diff <= Math.max(tolerance, allowance + CONFIG.EDGE_TOLERANCE_PX);
-        };
-        if (borders.top) {
-          const topCells = cells.filter((c) => inRange(c) && alignsWithOuterEdge(c, "top"));
-          for (const cell of topCells) {
-            mergeBorderStyle(cell, "top", borders.top);
-          }
-        }
-        if (borders.bottom) {
-          const bottomCells = cells.filter(
-            (c) => inRange(c) && alignsWithOuterEdge(c, "bottom")
-          );
-          for (const cell of bottomCells) {
-            mergeBorderStyle(cell, "bottom", borders.bottom);
-          }
-        }
-        if (borders.left) {
-          const leftCells = cells.filter((c) => inRange(c) && alignsWithOuterEdge(c, "left"));
-          for (const cell of leftCells) {
-            mergeBorderStyle(cell, "left", borders.left);
-          }
-        }
-        if (borders.right) {
-          const rightCells = cells.filter(
-            (c) => inRange(c) && alignsWithOuterEdge(c, "right")
-          );
-          for (const cell of rightCells) {
-            mergeBorderStyle(cell, "right", borders.right);
-          }
+        for (const side of ["top", "bottom", "left", "right"]) {
+          pushDeferredBorderInstruction(descriptor, side, borders[side]);
         }
       };
       for (const outerCell of nestedCells) {
@@ -1902,7 +1746,6 @@
           applyOuterElementBorders(descriptor, borders);
         }
       }
-      propagateSharedBorders(cells);
       const columnWidthsPx = [];
       for (let i = 0; i < columnEdges.length - 1; i++) {
         const w = snapToPrecision(columnEdges[i + 1] - columnEdges[i]);
@@ -2435,6 +2278,7 @@
   // src/workbook.js
   function createWorkbookWriter(dependencies) {
     const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
+    const blankBorderExclusions = /* @__PURE__ */ new WeakMap();
     const applyColumnWidths = (worksheet, columnWidthsPx) => {
       let totalPixels = 0, writtenPixels = 0;
       worksheet.columns = columnWidthsPx.map((px) => {
@@ -2569,23 +2413,18 @@
           throw error;
         }
         if (collision) {
+          const excludedCells = /* @__PURE__ */ new Set();
           for (let r = rowStart; r <= mergeRowEnd; r++) {
             for (let c = colStart; c <= mergeColEnd; c++) {
-              if (occupancy.has(`${r},${c}`)) continue;
+              if (occupancy.has(`${r},${c}`)) {
+                excludedCells.add(`${r},${c}`);
+                continue;
+              }
               const target = worksheet.getCell(r, c);
               if (cell.styles.fill) target.fill = cell.styles.fill;
-              const border = { ...target.border };
-              for (const [side, onEdge] of Object.entries({
-                top: r === rowStart,
-                bottom: r === mergeRowEnd,
-                left: c === colStart,
-                right: c === mergeColEnd
-              })) {
-                if (onEdge && cell.styles.border?.[side]) border[side] = cell.styles.border[side];
-              }
-              target.border = border;
             }
           }
+          blankBorderExclusions.set(cell, excludedCells);
           cell.sheetPosition = { rowStart, rowEnd: mergeRowEnd, colStart, colEnd: mergeColEnd };
           continue;
         }
@@ -2596,7 +2435,6 @@
         targetCell.value = cell.richText ? { richText: cell.richText } : cell.value;
         if (cell.styles.font) targetCell.font = cell.styles.font;
         if (cell.styles.alignment) targetCell.alignment = cell.styles.alignment;
-        if (cell.styles.border) targetCell.border = cell.styles.border;
         if (cell.styles.fill) targetCell.fill = cell.styles.fill;
         if (cell.styles.numFmt) targetCell.numFmt = cell.styles.numFmt;
         if (typeof cell.value === "number" && cell.styles.numFmt) {
@@ -2616,17 +2454,28 @@
       }
     };
     const applyDeferredBorders = (worksheet, model) => {
-      const instructions = Array.isArray(model.deferredBorders) ? model.deferredBorders : [];
+      const instructions = Array.isArray(model.deferredBorders) ? [...model.deferredBorders] : [];
+      for (const cell of model.cells) {
+        if (!cell.sheetPosition) continue;
+        for (const [side, style] of Object.entries(cell.styles.border || {})) {
+          if (style) instructions.push({
+            ...cell.sheetPosition,
+            side,
+            style,
+            excludedCells: blankBorderExclusions.get(cell)
+          });
+        }
+      }
       if (!instructions.length) return;
-      const applyBorderSide = (cell, side, borderStyle) => {
-        if (!cell || !borderStyle) return;
+      const applyBorderSide = (cell, side, borderStyle, excludedCells) => {
+        if (!cell || !borderStyle || excludedCells?.has(`${cell.row},${cell.col}`)) return;
         const existing = cell.border && typeof cell.border === "object" ? { ...cell.border } : {};
         existing[side] = { ...borderStyle };
-        cell.border = existing;
+        cell.style = { ...cell.style, border: existing };
       };
       for (const instruction of instructions) {
         if (!instruction || !instruction.style) continue;
-        const { side, style, rowStart, rowEnd, colStart, colEnd } = instruction;
+        const { side, style, rowStart, rowEnd, colStart, colEnd, excludedCells } = instruction;
         if (!side || rowStart == null || rowEnd == null || colStart == null || colEnd == null) continue;
         const safeRowStart = Math.max(1, Math.floor(rowStart));
         const safeRowEnd = Math.max(safeRowStart, Math.floor(rowEnd));
@@ -2635,22 +2484,22 @@
         switch (side) {
           case "left":
             for (let r = safeRowStart; r <= safeRowEnd; r++) {
-              applyBorderSide(worksheet.getCell(r, safeColStart), "left", style);
+              applyBorderSide(worksheet.getCell(r, safeColStart), "left", style, excludedCells);
             }
             break;
           case "right":
             for (let r = safeRowStart; r <= safeRowEnd; r++) {
-              applyBorderSide(worksheet.getCell(r, safeColEnd), "right", style);
+              applyBorderSide(worksheet.getCell(r, safeColEnd), "right", style, excludedCells);
             }
             break;
           case "top":
             for (let c = safeColStart; c <= safeColEnd; c++) {
-              applyBorderSide(worksheet.getCell(safeRowStart, c), "top", style);
+              applyBorderSide(worksheet.getCell(safeRowStart, c), "top", style, excludedCells);
             }
             break;
           case "bottom":
             for (let c = safeColStart; c <= safeColEnd; c++) {
-              applyBorderSide(worksheet.getCell(safeRowEnd, c), "bottom", style);
+              applyBorderSide(worksheet.getCell(safeRowEnd, c), "bottom", style, excludedCells);
             }
             break;
           default:
@@ -2958,7 +2807,7 @@
   function quantityCellType(root, locale, element, text, context) {
     const cell = element.closest("td, th");
     const rowTable = cell?.closest('table.rowitem, table[id^="row"]');
-    if (!rowTable || !rowTable.classList.contains("rowitem") && !/^row\d+$/.test(rowTable.id) || parseLocalizedNumber(text, locale) === null) return;
+    if (!rowTable || !rowTable.classList.contains("rowitem") && !/^row\d+(?:_processed)?$/.test(rowTable.id) || parseLocalizedNumber(text, locale) === null) return;
     const bounds = cell.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return;
     let columns = quantityColumnsByExport.get(context);
@@ -2967,7 +2816,7 @@
       for (const header of root.querySelectorAll("td, th")) {
         if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
         const headerTable = header.closest('table.rowheader, table.rowitem, table[id^="row"]');
-        if (!headerTable || !headerTable.matches("table.rowheader, table.rowitem") && headerTable.id !== "rowheader" && !/^row\d+$/.test(headerTable.id)) continue;
+        if (!headerTable || !headerTable.matches("table.rowheader, table.rowitem") && headerTable.id !== "rowheader" && !/^row\d+(?:_processed)?$/.test(headerTable.id)) continue;
         columns.push(header.getBoundingClientRect());
       }
       quantityColumnsByExport.set(context, columns);
@@ -3001,6 +2850,7 @@
       imageWidthScale: 1,
       imagePlacement: "precise",
       preserveSingleLine: true,
+      preserveEmailAddresses: true,
       preserveRichText: true,
       includeBackgrounds: false,
       pageSetup: {

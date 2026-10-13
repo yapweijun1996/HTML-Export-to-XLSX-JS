@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+- Add preserveEmailAddresses, enabled by the Globe3 profile, to fit complete email
+  addresses and optional contact notes on one line while retaining explicit breaks.
+- Write cell and enclosing-table borders only on measured perimeters after merging.
+  Detach shared merged styles and remove neighbor/padding border propagation to
+  prevent stray border segments at adjacent regions and manual page boundaries.
 - Add an optional cellType callback for legacy markup, with HTML type metadata
   taking precedence. Classify safe numeric Globe3 item and Summary quantities by
   matching their column boundaries to quantity headers, including section headers
   inside legacy item/numbered row tables, without changing the source DOM.
+  Recognize the print engine's _processed row IDs for Summary and Optional rows.
 - Write meaningful content before blank regions, compare source values for rich
   text and check entire merged ranges. Refine colliding grids once with every
   measured edge, retaining rejection for unresolved content collisions.

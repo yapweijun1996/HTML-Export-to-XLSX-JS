@@ -1,6 +1,7 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createWorkbookWriter(dependencies) {
  const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
+	const blankBorderExclusions = new WeakMap();
 	const applyColumnWidths = (worksheet, columnWidthsPx) => {
 		let totalPixels = 0, writtenPixels = 0;
 		worksheet.columns = columnWidthsPx.map(px => {
@@ -136,19 +137,18 @@ export function createWorkbookWriter(dependencies) {
 			}
 			if (collision) {
 				// Keep blank-region decoration on free grid cells without merging across content.
+				const excludedCells = new Set();
 				for (let r = rowStart; r <= mergeRowEnd; r++) {
 					for (let c = colStart; c <= mergeColEnd; c++) {
-						if (occupancy.has(`${r},${c}`)) continue;
+						if (occupancy.has(`${r},${c}`)) {
+							excludedCells.add(`${r},${c}`);
+							continue;
+						}
 						const target = worksheet.getCell(r, c);
 						if (cell.styles.fill) target.fill = cell.styles.fill;
-						const border = { ...target.border };
-						for (const [side, onEdge] of Object.entries({ top: r === rowStart,
-							bottom: r === mergeRowEnd, left: c === colStart, right: c === mergeColEnd })) {
-							if (onEdge && cell.styles.border?.[side]) border[side] = cell.styles.border[side];
-						}
-						target.border = border;
 					}
 				}
+				blankBorderExclusions.set(cell, excludedCells);
 				cell.sheetPosition = { rowStart, rowEnd: mergeRowEnd, colStart, colEnd: mergeColEnd };
 				continue;
 			}
@@ -160,7 +160,6 @@ export function createWorkbookWriter(dependencies) {
 			targetCell.value = cell.richText ? { richText: cell.richText } : cell.value;
 			if (cell.styles.font) targetCell.font = cell.styles.font;
 			if (cell.styles.alignment) targetCell.alignment = cell.styles.alignment;
-			if (cell.styles.border) targetCell.border = cell.styles.border;
 			if (cell.styles.fill) targetCell.fill = cell.styles.fill;
 			if (cell.styles.numFmt) targetCell.numFmt = cell.styles.numFmt;
 			if (typeof cell.value === 'number' && cell.styles.numFmt) {
@@ -184,19 +183,30 @@ export function createWorkbookWriter(dependencies) {
 	};
 
 	const applyDeferredBorders = (worksheet, model) => {
-		const instructions = Array.isArray(model.deferredBorders) ? model.deferredBorders : [];
+		const instructions = Array.isArray(model.deferredBorders) ? [...model.deferredBorders] : [];
+		// Write exact perimeters after merging. Explicit cell borders take precedence
+		// over enclosing table borders without extending onto neighboring regions.
+		for (const cell of model.cells) {
+			if (!cell.sheetPosition) continue;
+			for (const [side, style] of Object.entries(cell.styles.border || {})) {
+				if (style) instructions.push({ ...cell.sheetPosition, side, style,
+					excludedCells: blankBorderExclusions.get(cell) });
+			}
+		}
 		if (!instructions.length) return;
 
-		const applyBorderSide = (cell, side, borderStyle) => {
-			if (!cell || !borderStyle) return;
+		const applyBorderSide = (cell, side, borderStyle, excludedCells) => {
+			if (!cell || !borderStyle || excludedCells?.has(`${cell.row},${cell.col}`)) return;
 			const existing = cell.border && typeof cell.border === 'object' ? { ...cell.border } : {};
 			existing[side] = { ...borderStyle };
-			cell.border = existing;
+			// ExcelJS merged cells share a style object. Detach it before changing
+			// one edge so a partial border cannot spread across the merged region.
+			cell.style = { ...cell.style, border: existing };
 		};
 
 		for (const instruction of instructions) {
 			if (!instruction || !instruction.style) continue;
-			const { side, style, rowStart, rowEnd, colStart, colEnd } = instruction;
+			const { side, style, rowStart, rowEnd, colStart, colEnd, excludedCells } = instruction;
 			if (!side || rowStart == null || rowEnd == null || colStart == null || colEnd == null) continue;
 			const safeRowStart = Math.max(1, Math.floor(rowStart));
 			const safeRowEnd = Math.max(safeRowStart, Math.floor(rowEnd));
@@ -206,22 +216,22 @@ export function createWorkbookWriter(dependencies) {
 			switch (side) {
 				case 'left':
 				for (let r = safeRowStart; r <= safeRowEnd; r++) {
-					applyBorderSide(worksheet.getCell(r, safeColStart), 'left', style);
+					applyBorderSide(worksheet.getCell(r, safeColStart), 'left', style, excludedCells);
 				}
 				break;
 				case 'right':
 				for (let r = safeRowStart; r <= safeRowEnd; r++) {
-					applyBorderSide(worksheet.getCell(r, safeColEnd), 'right', style);
+					applyBorderSide(worksheet.getCell(r, safeColEnd), 'right', style, excludedCells);
 				}
 				break;
 				case 'top':
 				for (let c = safeColStart; c <= safeColEnd; c++) {
-					applyBorderSide(worksheet.getCell(safeRowStart, c), 'top', style);
+					applyBorderSide(worksheet.getCell(safeRowStart, c), 'top', style, excludedCells);
 				}
 				break;
 				case 'bottom':
 				for (let c = safeColStart; c <= safeColEnd; c++) {
-					applyBorderSide(worksheet.getCell(safeRowEnd, c), 'bottom', style);
+					applyBorderSide(worksheet.getCell(safeRowEnd, c), 'bottom', style, excludedCells);
 				}
 				break;
 				default:

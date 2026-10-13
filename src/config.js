@@ -43,6 +43,7 @@ export const DEFAULT_CONFIG = {
 		PAGE_BREAK_SELECTOR: '[data-xlsx-page-break]',
 		RESPECT_PAGE_BREAKS: true,
 		PRESERVE_SINGLE_LINE: false,
+		PRESERVE_EMAIL_ADDRESSES: false,
 		PRESERVE_RICH_TEXT: false,
 		INCLUDE_BACKGROUNDS: true,
 		NORMAL_FONT: null,
@@ -78,6 +79,7 @@ const mappings = {
     imageTimeoutMs: 'IMAGE_TIMEOUT_MS', imageConcurrency: 'IMAGE_CONCURRENCY',
     pageBreakSelector: 'PAGE_BREAK_SELECTOR', respectPageBreaks: 'RESPECT_PAGE_BREAKS', exclude: 'BLACKLIST_SELECTORS',
     minColumnWidthPx: 'MIN_COL_WIDTH_PX', preserveSingleLine: 'PRESERVE_SINGLE_LINE',
+    preserveEmailAddresses: 'PRESERVE_EMAIL_ADDRESSES',
     preserveRichText: 'PRESERVE_RICH_TEXT', includeBackgrounds: 'INCLUDE_BACKGROUNDS',
     debug: 'DEBUG', sheetName: 'SHEET_NAME'
 };
@@ -111,7 +113,7 @@ export function resolveOptions(root, options = {}) {
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError('imageConcurrency must be an integer');
     if (typeof config.RESPECT_PAGE_BREAKS !== 'boolean') throw new TypeError('respectPageBreaks must be a boolean');
-    for (const key of ['preserveSingleLine', 'preserveRichText', 'includeBackgrounds']) {
+    for (const key of ['preserveSingleLine', 'preserveEmailAddresses', 'preserveRichText', 'includeBackgrounds']) {
         if (typeof config[mappings[key]] !== 'boolean') throw new TypeError(key + ' must be a boolean');
     }
     if (options.currencyDisplay !== undefined && !['code', 'source'].includes(options.currencyDisplay)) {

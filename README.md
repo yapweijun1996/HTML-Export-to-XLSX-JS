@@ -84,6 +84,7 @@ outcome. Loading the script after DOMContentLoaded is supported.
 | columnWidthScale | 1 | Column width adjustment |
 | minColumnWidthPx | 10 | Minimum width of a grid fragment |
 | preserveSingleLine | false | Keep all visibly single-line labels on one line with Shrink to Fit |
+| preserveEmailAddresses | false | Fit a whole email address and optional parenthesized contact note on one line |
 | preserveRichText | false | Retain mixed visible inline font runs in string cells |
 | includeBackgrounds | true | Retain background fills; false matches browser printing without backgrounds |
 | imageScale, imageWidthScale | 3, 0.92 | Raster quality and placement size |
@@ -187,6 +188,18 @@ font properties. Bold or underlined captions that occupy one rendered line use
 Shrink to Fit within the original grid. Explicit line breaks and naturally wrapped
 captions retain text wrapping. preserveSingleLine extends this behavior to plain
 labels, including summary descriptions.
+
+Globe3 quantity inference also accepts numbered row IDs marked with _processed
+by the legacy print engine, including Summary and Optional rows without rowitem.
+
+preserveEmailAddresses also keeps an email address with an optional parenthesized
+contact note on one line using Shrink to Fit. Explicit line breaks remain intact.
+The Globe3 profile enables this option; other callers retain the default wrapping.
+
+Cell and enclosing-table borders follow their measured grid perimeters. Borders
+are not copied onto neighboring cells or padded inner cells. Perimeter styles are
+detached after merging so an edge segment does not spread through a shared merged
+style. Explicit cell borders take precedence over enclosing-table borders.
 
 Column dimensions follow the [Open XML Column width definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.column?view=openxml-3.0.1),
 using the workbook Normal font's Calibri 11 maximum digit width of 7px at 96 DPI.
