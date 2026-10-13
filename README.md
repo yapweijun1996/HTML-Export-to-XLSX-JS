@@ -199,6 +199,10 @@ translucent background is blended over the background beneath it, and translucen
 text and border colors over white. RTL start/end alignment respects
 the element's direction. Horizontal alignment follows the rendered text, including
 legacy align attributes on rows and inner blocks such as center or div align.
+Vertical alignment uses the Excel anchor (top, middle or bottom) closest to where the
+visible text renders in its cell, so line breaks dropped from the value, such as a
+closing br in a cell without valign, do not move the text; the CSS anchor stays when it
+is as close as the best one.
 A table used directly as root retains its background and borders.
 Uniform inline font families, colors and italics are read from visible text rather
 than only the outer cell. Underline and strike-through decorations include inline

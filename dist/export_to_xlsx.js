@@ -820,6 +820,25 @@
       }
       return found;
     };
+    const renderedVerticalAlignment = (cell, cssVertical) => {
+      let textTop = Infinity, textBottom = -Infinity;
+      for (const node of visibleTextNodes(cell)) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          textTop = Math.min(textTop, rect.top);
+          textBottom = Math.max(textBottom, rect.bottom);
+        }
+      }
+      if (!Number.isFinite(textTop)) return cssVertical;
+      const box = cell.getBoundingClientRect();
+      const offset = textTop - box.top;
+      const free = box.height - (textBottom - textTop);
+      const error = { top: Math.abs(offset), middle: Math.abs(offset - free / 2), bottom: Math.abs(offset - free) };
+      const best = Object.keys(error).reduce((closest, anchor) => error[anchor] < error[closest] ? anchor : closest);
+      return error[cssVertical || "bottom"] <= error[best] + CONFIG.EDGE_TOLERANCE_PX ? cssVertical : best;
+    };
     const backgroundCaches = /* @__PURE__ */ new WeakMap();
     const extractBackground = (element, root) => {
       if (!CONFIG.INCLUDE_BACKGROUNDS) return null;
@@ -1031,7 +1050,8 @@
       const attrHorizontal = horizontalKeyword(cell.getAttribute("align") || cell.align);
       const attrVertical = normalize(cell.getAttribute("valign") || cell.vAlign);
       const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || void 0;
-      const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || void 0;
+      const declaredVertical = verticalMap[cssVertical] || verticalMap[attrVertical] || void 0;
+      const vertical = textValue?.trim() ? renderedVerticalAlignment(cell, declaredVertical) : declaredVertical;
       const font = extractFont(cell, cs);
       const emailLine = CONFIG.PRESERVE_EMAIL_ADDRESSES && typeof textValue === "string" && !/[\r\n]/.test(textValue) && /^[^\s@]+@[^\s@]+\.[^\s@]+(?:\s+[（(][^\r\n]*[）)])?$/u.test(textValue.trim());
       const singleLineCaption = emailLine || (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);

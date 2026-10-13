@@ -1,7 +1,8 @@
 # Known Issues
 
-Code review of `main` at `f7556fd`, performed 2026-10-13. All 20 issues are now fixed
-or resolved. Line references in the details describe the code before each fix.
+Code review of `main` at `f7556fd`, performed 2026-10-13. BUG-21 was found afterwards in a
+real Globe3 export. All issues are now fixed or resolved. Line references in the details
+describe the code before each fix.
 
 Evidence levels:
 
@@ -39,6 +40,7 @@ regression test failed on the code before its fix.
 | BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Resolved by `70d781f` |
 | BUG-19 | Low | Images | Raster canvases have no size cap | Verified | Fixed |
 | BUG-20 | Low | Config | sheetName is not validated | Verified | Fixed |
+| BUG-21 | Medium | Styles | Text without its dropped closing line breaks moves down in a cell without valign | Verified | Fixed |
 
 ## Details
 
@@ -266,6 +268,20 @@ regression test failed on the code before its fix.
 - **Fix:** validate the option in `resolveOptions`.
 - **Status:** fixed. A non-string name throws `TypeError`, the reserved name throws
   `RangeError`, and edge apostrophes are removed with the other forbidden characters.
+
+### BUG-21 Text without its dropped closing line breaks moves down in a cell without valign
+
+- **Symptom:** in the Chong Wai quotation export of 2026-10-13, item descriptions sit in
+  the middle of their merged rows, below the item number, although the printform shows
+  them at the top.
+- **Cause:** a Globe3 description is a nested table whose cell has no `valign`, so its
+  computed alignment is `middle`. The text looked top-aligned only because closing `<br>`
+  line breaks filled the space below it. `f7556fd` drops those breaks from the value to
+  stop clipping, which left one centered line
+  ([src/styles.js](src/styles.js) `extractAlignment`).
+- **Fix:** choose the vertical anchor from where the visible text renders.
+- **Status:** fixed. The anchor (top, middle or bottom) closest to the rendered text
+  position is used; the CSS anchor stays when it is as close as the best one.
 
 ## Cleanup
 

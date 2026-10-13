@@ -199,4 +199,20 @@ for (const mode of ['', 'min']) {
         expect(['top', 'bottom', 'left'].filter(side => border('PLAIN')[side])).toEqual([]);
         expect(['top', 'bottom', 'right'].every(side => border('BOXED')[side])).toBe(true);
     });
+
+    test('vertical alignment follows where the visible text renders in its cell' + suffix, async ({ page }) => {
+        // The first row mirrors Globe3 item descriptions: a top-aligned cell holds a nested
+        // table whose cell has no valign and ends with line breaks the value drops.
+        const { cells } = await exportHtml(page, mode, `<table style="width:300px">
+            <tr><td style="width:40px">A1</td><td><table style="width:100%"><tr>
+                <td style="vertical-align:middle;line-height:16px">TRAILING BREAKS<br><br></td></tr></table></td></tr>
+            <tr><td colspan="2" style="vertical-align:top;line-height:16px;height:80px"><br><br><br><br>LEADING BREAKS</td></tr>
+            <tr><td colspan="2" style="vertical-align:middle;height:80px">CENTERED</td></tr>
+            <tr><td colspan="2" style="vertical-align:top;height:80px">TOPPED</td></tr></table>`);
+        const vertical = value => cells.find(cell => cell.value === value).alignment?.vertical;
+        expect(vertical('TRAILING BREAKS')).toBe('top');
+        expect(vertical('LEADING BREAKS')).toBe('bottom');
+        expect(vertical('CENTERED')).toBe('middle');
+        expect(vertical('TOPPED')).toBe('top');
+    });
 }

@@ -78,6 +78,8 @@
 - Blend translucent colors over their backdrop, read borders from the computed style
   only, keep refined-grid columns at their measured width, and validate sheetName.
 - Remove unused layout, image and value helpers.
+- Choose the vertical anchor closest to where the visible text renders, keeping Globe3
+  item descriptions at the top after their closing line breaks are dropped.
 - Record the code review findings and their status in KNOWN_ISSUES.md.
 
 ## 0.1.0 — Preview

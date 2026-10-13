@@ -299,6 +299,30 @@ export function createStyles(dependencies) {
 		return found;
 	};
 
+	// Excel anchors text at the top, middle or bottom of its merged range. Choose the anchor
+	// closest to where the visible text renders: blank lines that the value drops (such as a
+	// closing <br>) or a leading break move the text inside a cell without changing its CSS.
+	// The CSS anchor stays when it is as close as the best one; Excel's default is bottom.
+	const renderedVerticalAlignment = (cell, cssVertical) => {
+		let textTop = Infinity, textBottom = -Infinity;
+		for (const node of visibleTextNodes(cell)) {
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			for (const rect of range.getClientRects()) {
+				if (rect.width <= 0 || rect.height <= 0) continue;
+				textTop = Math.min(textTop, rect.top);
+				textBottom = Math.max(textBottom, rect.bottom);
+			}
+		}
+		if (!Number.isFinite(textTop)) return cssVertical;
+		const box = cell.getBoundingClientRect();
+		const offset = textTop - box.top;
+		const free = box.height - (textBottom - textTop);
+		const error = { top: Math.abs(offset), middle: Math.abs(offset - free / 2), bottom: Math.abs(offset - free) };
+		const best = Object.keys(error).reduce((closest, anchor) => error[anchor] < error[closest] ? anchor : closest);
+		return error[cssVertical || 'bottom'] <= error[best] + CONFIG.EDGE_TOLERANCE_PX ? cssVertical : best;
+	};
+
 	const backgroundCaches = new WeakMap();
 	const extractBackground = (element, root) => {
 		if (!CONFIG.INCLUDE_BACKGROUNDS) return null;
@@ -559,7 +583,8 @@ export function createStyles(dependencies) {
 		const attrVertical = normalize(cell.getAttribute('valign') || cell.vAlign);
 
 		const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || undefined;
-		const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || undefined;
+		const declaredVertical = verticalMap[cssVertical] || verticalMap[attrVertical] || undefined;
+		const vertical = textValue?.trim() ? renderedVerticalAlignment(cell, declaredVertical) : declaredVertical;
 		const font = extractFont(cell, cs);
 		// Keep a complete email address and optional contact note together, while
 		// retaining explicit line breaks and ordinary multiline text.
