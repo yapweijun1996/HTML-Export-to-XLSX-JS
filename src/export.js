@@ -42,6 +42,7 @@ export async function exportXlsx(options = {}) {
     const ExcelJS = options.exceljs || globalThis.ExcelJS;
     if (!ExcelJS?.Workbook) throw new Error('Load ExcelJS separately or supply options.exceljs');
     const { config: CONFIG, currency, locale } = resolveOptions(root, options);
+    const cellTypeContext = Object.freeze({ root });
     const warnings = [];
     const warnLog = (message, context = {}) => {
         const warning = { code: 'EXPORT_WARNING', ...context, message: String(message) };
@@ -61,7 +62,7 @@ export async function exportXlsx(options = {}) {
         debugLog: (...args) => { if (CONFIG.DEBUG) console.debug('[html-to-xlsx]', ...args); },
         detectCurrency: raw => detectCurrency(raw, { currency, locale, currencyDisplay: options.currencyDisplay }),
         parseCellValue: (text, cell) => parseCellValue(text, cell, { currency, locale,
-            currencyDisplay: options.currencyDisplay, cellType: options.cellType }),
+            currencyDisplay: options.currencyDisplay, cellType: options.cellType, cellTypeContext }),
         mapWithConcurrency
     };
     Object.assign(dependencies, createLayoutMetrics(dependencies));

@@ -1,16 +1,30 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 import { parseLocalizedNumber } from '../src/values.js';
 
-function quantityCellType(root, locale, element, text) {
+const quantityColumnsByExport = new WeakMap();
+
+function quantityCellType(root, locale, element, text, context) {
     const cell = element.closest('td, th');
-    if (!cell?.closest('table.rowitem') || parseLocalizedNumber(text, locale) === null) return;
+    const rowTable = cell?.closest('table.rowitem, table[id^="row"]');
+    if (!rowTable || (!rowTable.classList.contains('rowitem') && !/^row\d+$/.test(rowTable.id))
+        || parseLocalizedNumber(text, locale) === null) return;
     const bounds = cell.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return;
     // Separate legacy item tables share the header's horizontal column boundaries.
     // Match both edges so item identifiers and numeric-looking units stay text.
-    for (const header of root.querySelectorAll('table.rowheader td, table.rowheader th, table#rowheader td, table#rowheader th')) {
-        if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
-        const column = header.getBoundingClientRect();
+    let columns = quantityColumnsByExport.get(context);
+    if (!columns) {
+        columns = [];
+        for (const header of root.querySelectorAll('td, th')) {
+            if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
+            const headerTable = header.closest('table.rowheader, table.rowitem, table[id^="row"]');
+            if (!headerTable || (!headerTable.matches('table.rowheader, table.rowitem')
+                && headerTable.id !== 'rowheader' && !/^row\d+$/.test(headerTable.id))) continue;
+            columns.push(header.getBoundingClientRect());
+        }
+        quantityColumnsByExport.set(context, columns);
+    }
+    for (const column of columns) {
         if (column.width > 0 && column.height > 0 && column.top <= bounds.top
             && Math.abs(column.left - bounds.left) <= 2 && Math.abs(column.right - bounds.right) <= 2) {
             return 'number';
@@ -26,8 +40,8 @@ export function installGlobe3(api, documentRoot = document) {
         root,
         currency: root.getAttribute('data-excel-currency') || 'USD',
         locale: root.getAttribute('data-excel-locale') || 'en-US',
-        cellType: (element, text) => quantityCellType(root,
-            root.getAttribute('data-excel-locale') || 'en-US', element, text),
+        cellType: (element, text, context) => quantityCellType(root,
+            root.getAttribute('data-excel-locale') || 'en-US', element, text, context),
         exclude: ['[data-xlsx-ignore]', 'table#mainapproval', 'table#ext_id', 'table#myMenu'],
         pageBreakSelector: '[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf',
         // Keep editable cells while retaining the printform's physical text/image sizes.

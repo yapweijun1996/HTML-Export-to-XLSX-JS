@@ -174,7 +174,7 @@ export function parseCellValue(text, element, options = {}) {
     };
     let type = attribute('data-excel-type');
     if (type === null && options.cellType) {
-        type = options.cellType(element, text);
+        type = options.cellType(element, text, options.cellTypeContext);
         if (type != null && !['text', 'number', 'currency'].includes(type)) {
             throw new TypeError('cellType must return text, number, currency or undefined');
         }

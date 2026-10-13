@@ -68,7 +68,7 @@ outcome. Loading the script after DOMContentLoaded is supported.
 | currency | container attribute, otherwise unset | ISO currency for ambiguous symbols |
 | currencyDisplay | code | code or source; source retains a detected symbol/code, spacing and position |
 | locale | container attribute, otherwise en-US | Input separators and localized digits |
-| cellType | unset | Callback (element, text) returning text, number, currency or undefined for cells without type metadata |
+| cellType | unset | Callback (element, text, context) returning text, number, currency or undefined for cells without type metadata |
 | filename | document title plus timestamp | Optional .xlsx filename |
 | sheetName | PrintForm | Excel worksheet name |
 | download | true | Return bytes without downloading when false |
@@ -134,6 +134,8 @@ For legacy HTML, cellType can explicitly declare a value's type without changing
 the DOM. Existing data-excel-type attributes take precedence. Returning undefined
 keeps the normal parsing behavior; numeric declarations retain the same locale and
 precision checks as typed HTML cells.
+The callback context contains root and is unique to each export, allowing adapters
+to cache classification metadata for one settled DOM snapshot.
 
 For text alongside a nested table, metadata is resolved from the text's element
 up to its containing td/th, stopping before the parent table's cell. Formatting
@@ -231,9 +233,11 @@ ERP-specific defaults belong to [adapters/globe3.js](adapters/globe3.js).
 The bundled adapter activates only when .exp_to_excel_button_content exists.
 It preserves .html_to_excel_btn and window.exportPrintFormToXlsx(), legacy
 exclusions and .pagebreak_bf_processed markers.
-Safe numeric values in legacy table.rowitem quantity cells become editable numbers
+Safe numeric values in legacy table.rowitem and table#rowN quantity cells become editable numbers
 when both cell edges match a preceding Qty/Quantity or 數量/数量 header in
-table.rowheader or table#rowheader. Other untyped values, including phone numbers
+table.rowheader, table#rowheader, table.rowitem or table#rowN (N is a numeric row ID).
+This includes section headers, Summary rows and their quantity columns.
+Other untyped values, including phone numbers
 and item identifiers, remain text. This classification does not modify the DOM.
 Bound-button failures log the exception message to the browser console before the
 compatibility alert. Unresolved collisions include source element IDs, ranges,

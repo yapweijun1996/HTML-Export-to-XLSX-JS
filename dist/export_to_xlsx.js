@@ -177,7 +177,7 @@
     };
     let type = attribute("data-excel-type");
     if (type === null && options.cellType) {
-      type = options.cellType(element, text);
+      type = options.cellType(element, text, options.cellTypeContext);
       if (type != null && !["text", "number", "currency"].includes(type)) {
         throw new TypeError("cellType must return text, number, currency or undefined");
       }
@@ -2827,6 +2827,7 @@
     const ExcelJS = options.exceljs || globalThis.ExcelJS;
     if (!ExcelJS?.Workbook) throw new Error("Load ExcelJS separately or supply options.exceljs");
     const { config: CONFIG, currency, locale } = resolveOptions(root, options);
+    const cellTypeContext = Object.freeze({ root });
     const warnings = [];
     const warnLog = (message, context = {}) => {
       const warning = { code: "EXPORT_WARNING", ...context, message: String(message) };
@@ -2856,7 +2857,8 @@
         currency,
         locale,
         currencyDisplay: options.currencyDisplay,
-        cellType: options.cellType
+        cellType: options.cellType,
+        cellTypeContext
       }),
       mapWithConcurrency
     };
@@ -2952,14 +2954,25 @@
   }
 
   // adapters/globe3.js
-  function quantityCellType(root, locale, element, text) {
+  var quantityColumnsByExport = /* @__PURE__ */ new WeakMap();
+  function quantityCellType(root, locale, element, text, context) {
     const cell = element.closest("td, th");
-    if (!cell?.closest("table.rowitem") || parseLocalizedNumber(text, locale) === null) return;
+    const rowTable = cell?.closest('table.rowitem, table[id^="row"]');
+    if (!rowTable || !rowTable.classList.contains("rowitem") && !/^row\d+$/.test(rowTable.id) || parseLocalizedNumber(text, locale) === null) return;
     const bounds = cell.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return;
-    for (const header of root.querySelectorAll("table.rowheader td, table.rowheader th, table#rowheader td, table#rowheader th")) {
-      if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
-      const column = header.getBoundingClientRect();
+    let columns = quantityColumnsByExport.get(context);
+    if (!columns) {
+      columns = [];
+      for (const header of root.querySelectorAll("td, th")) {
+        if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
+        const headerTable = header.closest('table.rowheader, table.rowitem, table[id^="row"]');
+        if (!headerTable || !headerTable.matches("table.rowheader, table.rowitem") && headerTable.id !== "rowheader" && !/^row\d+$/.test(headerTable.id)) continue;
+        columns.push(header.getBoundingClientRect());
+      }
+      quantityColumnsByExport.set(context, columns);
+    }
+    for (const column of columns) {
       if (column.width > 0 && column.height > 0 && column.top <= bounds.top && Math.abs(column.left - bounds.left) <= 2 && Math.abs(column.right - bounds.right) <= 2) {
         return "number";
       }
@@ -2972,11 +2985,12 @@
       root,
       currency: root.getAttribute("data-excel-currency") || "USD",
       locale: root.getAttribute("data-excel-locale") || "en-US",
-      cellType: (element, text) => quantityCellType(
+      cellType: (element, text, context) => quantityCellType(
         root,
         root.getAttribute("data-excel-locale") || "en-US",
         element,
-        text
+        text,
+        context
       ),
       exclude: ["[data-xlsx-ignore]", "table#mainapproval", "table#ext_id", "table#myMenu"],
       pageBreakSelector: "[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf",

@@ -3,8 +3,9 @@
 ## Unreleased
 
 - Add an optional cellType callback for legacy markup, with HTML type metadata
-  taking precedence. Classify safe numeric Globe3 item quantities by matching
-  their column boundaries to quantity headers without changing the source DOM.
+  taking precedence. Classify safe numeric Globe3 item and Summary quantities by
+  matching their column boundaries to quantity headers, including section headers
+  inside legacy item/numbered row tables, without changing the source DOM.
 - Write meaningful content before blank regions, compare source values for rich
   text and check entire merged ranges. Refine colliding grids once with every
   measured edge, retaining rejection for unresolved content collisions.
