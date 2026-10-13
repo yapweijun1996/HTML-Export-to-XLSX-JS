@@ -260,6 +260,7 @@ export function createImages(dependencies) {
 		return {
 			widthPx,
 			heightPx,
+			topPx: topEdge,
 			columnEdges: columnEdges.slice(cellModel.colStart, cellModel.colEnd + 1).map(edge => edge - leftEdge),
 			rowEdges: rowEdges.slice(cellModel.rowStart, cellModel.rowEnd + 1).map(edge => edge - topEdge),
 			startColIndex: sheetPosition.colStart - 1,
@@ -291,13 +292,37 @@ export function createImages(dependencies) {
 		return startIndex + position.index + (span > 0 ? position.offset / span : 0);
 	};
 
+	const ALIGNMENT_OVERFLOW = 'Image alignment exceeds its cell; enlarge the HTML cell, reduce imageWidthScale, or use precise placement';
+	const fitsCell = (metrics, left, top, width, height) => {
+		const tolerance = CONFIG.EDGE_TOLERANCE_PX;
+		return left + width <= metrics.widthPx + tolerance && top + height <= metrics.heightPx + tolerance;
+	};
+
+	// Alignment sets the horizontal flow. Vertically the flow starts at the images' rendered top,
+	// so it does not cover text above them, and moves up only as far as the cell requires.
+	const flowTop = (images, metrics, flowHeight, fallback = 0) => {
+		const measured = Math.min(...images.map(job => job.top)) - metrics.topPx;
+		if (!Number.isFinite(measured)) return fallback;
+		return Math.max(0, Math.min(measured, metrics.heightPx - flowHeight));
+	};
+
+	const commitPlacements = (worksheet, workbook, metrics, placements, forced) => {
+		if (!placements.every(item => fitsCell(metrics, item.left, item.top, item.width, item.height))) {
+			// Reject an impossible forced flow rather than clamping several images to the same point.
+			if (forced) throw new Error(ALIGNMENT_OVERFLOW);
+			warnLog('Images exceed their cell flow; placed at their rendered positions',
+				{ code: 'IMAGE_ALIGNMENT_FALLBACK', count: placements.length });
+			return false;
+		}
+		for (const item of placements) {
+			addAlignedImage(worksheet, workbook, item.job, metrics, item.left, item.top, item.width, item.height);
+		}
+		return true;
+	};
+
 	const addAlignedImage = (worksheet, workbook, job, metrics, offsetLeftPx, offsetTopPx, widthPx, heightPx) => {
 		if (!metrics || widthPx <= 0 || heightPx <= 0) return false;
-		// Reject an impossible forced flow rather than clamping several images to the same point.
-		const tolerance = CONFIG.EDGE_TOLERANCE_PX;
-		if (offsetLeftPx + widthPx > metrics.widthPx + tolerance || offsetTopPx + heightPx > metrics.heightPx + tolerance) {
-			throw new Error('Image alignment exceeds its cell; enlarge the HTML cell, reduce imageWidthScale, or use precise placement');
-		}
+		if (!fitsCell(metrics, offsetLeftPx, offsetTopPx, widthPx, heightPx)) throw new Error(ALIGNMENT_OVERFLOW);
 		const safeLeft = Math.max(0, offsetLeftPx || 0);
 		const safeTop = Math.max(0, offsetTopPx || 0);
 		const tl = {
@@ -321,7 +346,7 @@ export function createImages(dependencies) {
 		return true;
 	};
 
-	const placeImagesInline = (worksheet, workbook, images, cellModel, layoutModel, justify) => {
+	const placeImagesInline = (worksheet, workbook, images, cellModel, layoutModel, justify, forced = true) => {
 		const metrics = getCellPlacementMetrics(cellModel, layoutModel);
 		if (!metrics || metrics.widthPx <= 0 || metrics.heightPx <= 0) {
 			return false;
@@ -351,7 +376,9 @@ export function createImages(dependencies) {
 			rows.push(currentRow);
 		}
 
-		let currentTop = 0;
+		const flowHeight = rows.reduce((sum, row) => sum + row.height, 0) + spacingPx * Math.max(0, rows.length - 1);
+		let currentTop = flowTop(images, metrics, flowHeight);
+		const placements = [];
 		for (const row of rows) {
 			const rowWidth = row.width;
 			let startLeft = 0;
@@ -362,32 +389,34 @@ export function createImages(dependencies) {
 			}
 			let cursor = startLeft;
 			for (const item of row.items) {
-				addAlignedImage(worksheet, workbook, item.job, metrics, cursor, currentTop, item.widthPx, item.heightPx);
+				placements.push({ job: item.job, left: cursor, top: currentTop, width: item.widthPx, height: item.heightPx });
 				cursor += item.widthPx + spacingPx;
 			}
 			currentTop += row.height + spacingPx;
 		}
-		return true;
+		return commitPlacements(worksheet, workbook, metrics, placements, forced);
 	};
 
-	const placeImagesStacked = (worksheet, workbook, images, cellModel, layoutModel) => {
+	const placeImagesStacked = (worksheet, workbook, images, cellModel, layoutModel, forced = true) => {
 		const metrics = getCellPlacementMetrics(cellModel, layoutModel);
 		if (!metrics || metrics.widthPx <= 0 || metrics.heightPx <= 0) {
 			return false;
 		}
 		const spacingPx = Math.max(0, snapToPrecision(CONFIG.IMAGE_SPACING_PX || 0));
 		const finalImageScale = toPositiveNumber(CONFIG.IMAGE_WIDTH_SCALE) || 1.0;
-		let currentTop = 0;
-		for (const job of images) {
-			const widthPx = Math.max(1, job.width * finalImageScale);
-			const heightPx = Math.max(1, job.height * finalImageScale);
-			addAlignedImage(worksheet, workbook, job, metrics, 0, currentTop, widthPx, heightPx);
-			currentTop += heightPx + spacingPx;
+		const sizes = images.map(job => ({ job, width: Math.max(1, job.width * finalImageScale),
+			height: Math.max(1, job.height * finalImageScale) }));
+		const flowHeight = sizes.reduce((sum, item) => sum + item.height, 0) + spacingPx * Math.max(0, sizes.length - 1);
+		let currentTop = flowTop(images, metrics, flowHeight);
+		const placements = [];
+		for (const item of sizes) {
+			placements.push({ ...item, left: 0, top: currentTop });
+			currentTop += item.height + spacingPx;
 		}
-		return true;
+		return commitPlacements(worksheet, workbook, metrics, placements, forced);
 	};
 
-	const placeSingleImageCentered = (worksheet, workbook, job, cellModel, layoutModel) => {
+	const placeSingleImageCentered = (worksheet, workbook, job, cellModel, layoutModel, forced = true) => {
 		const metrics = getCellPlacementMetrics(cellModel, layoutModel);
 		if (!metrics || metrics.widthPx <= 0 || metrics.heightPx <= 0) {
 			return false;
@@ -396,32 +425,36 @@ export function createImages(dependencies) {
 		const widthPx = Math.max(1, job.width * finalImageScale);
 		const heightPx = Math.max(1, job.height * finalImageScale);
 		const offsetLeft = Math.max(0, (metrics.widthPx - widthPx) / 2);
-		const offsetTop = Math.max(0, (metrics.heightPx - heightPx) / 2);
-		return addAlignedImage(worksheet, workbook, job, metrics, offsetLeft, offsetTop, widthPx, heightPx);
+		// Without a rendered position, center vertically as well.
+		const offsetTop = flowTop([job], metrics, heightPx, Math.max(0, (metrics.heightPx - heightPx) / 2));
+		return commitPlacements(worksheet, workbook, metrics,
+			[{ job, left: offsetLeft, top: offsetTop, width: widthPx, height: heightPx }], forced);
 	};
 
-	const placeImagesWithAlignment = (worksheet, workbook, images, cellModel, layoutModel, alignment) => {
+	// A forced flow (cell attribute or explicit imageAlignment) rejects when it cannot fit;
+	// otherwise the caller places the images at their rendered positions.
+	const placeImagesWithAlignment = (worksheet, workbook, images, cellModel, layoutModel, alignment, forced = true) => {
 		const keyword = alignment || 'inline';
 		if (keyword === 'precise') return false;
 		if (images.length === 1) {
 			if (keyword === 'center') {
-				return placeSingleImageCentered(worksheet, workbook, images[0], cellModel, layoutModel);
+				return placeSingleImageCentered(worksheet, workbook, images[0], cellModel, layoutModel, forced);
 			}
 			const justify = keyword === 'right' ? 'end' : keyword === 'center' ? 'center' : 'start';
-			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, justify);
+			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, justify, forced);
 		}
 
 		switch (keyword) {
 			case 'block':
-			return placeImagesStacked(worksheet, workbook, images, cellModel, layoutModel);
+			return placeImagesStacked(worksheet, workbook, images, cellModel, layoutModel, forced);
 			case 'right':
-			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'end');
+			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'end', forced);
 			case 'center':
-			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'center');
+			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'center', forced);
 			case 'left':
 			case 'inline':
 			default:
-			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'start');
+			return placeImagesInline(worksheet, workbook, images, cellModel, layoutModel, 'start', forced);
 		}
 	};
 
@@ -484,9 +517,15 @@ export function createImages(dependencies) {
 		}
 
 		const cellGroups = new Map();
+		const preciseFallbackJobs = [];
 		for (const job of resolvedJobs) {
 			const parentCell = job.parentCell;
 			if (!parentCell || !parentCell.sheetPosition) {
+				continue;
+			}
+			// An image outside table cells has no cell flow; its rendered position is authoritative.
+			if (parentCell.outsideCell) {
+				preciseFallbackJobs.push(job);
 				continue;
 			}
 			if (!cellGroups.has(parentCell)) {
@@ -495,13 +534,13 @@ export function createImages(dependencies) {
 			cellGroups.get(parentCell).push(job);
 		}
 
-		const preciseFallbackJobs = [];
 		const defaultAlignment = toImageAlignment(CONFIG.IMAGE_ALIGNMENT) || 'inline';
 
 		for (const [cellModel, images] of cellGroups.entries()) {
 			if (!Array.isArray(images) || !images.length) continue;
 			const cellAlignment = getCellImageAlignment(cellModel, !CONFIG.IMAGE_ALIGNMENT_EXPLICIT) || defaultAlignment;
-			const placed = placeImagesWithAlignment(worksheet, workbook, images, cellModel, layoutModel, cellAlignment);
+			const forced = CONFIG.IMAGE_ALIGNMENT_EXPLICIT || Boolean(getCellImageAlignment(cellModel, false));
+			const placed = placeImagesWithAlignment(worksheet, workbook, images, cellModel, layoutModel, cellAlignment, forced);
 			if (!placed) {
 				preciseFallbackJobs.push(...images);
 			}

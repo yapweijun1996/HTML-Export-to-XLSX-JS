@@ -139,7 +139,8 @@ for (const mode of ['', 'min']) {
             <tr><td style="height:100px" data-excel-image-align="left"><img src="./stamp.svg" width="20" height="20"></td></tr></table>`);
         const result = await exported(page, { imageAlignment: 'center' });
         const images = result.sheet.getImages();
-        expect(imagePosition(images[0], result.sheet)).toEqual({ x: 140, y: 40 });
+        // Alignment sets the horizontal flow; vertically the image keeps its rendered top (top-aligned cell).
+        expect(imagePosition(images[0], result.sheet)).toEqual({ x: 140, y: 0 });
         expect(imagePosition(images[1], result.sheet).x).toBe(0);
     });
 

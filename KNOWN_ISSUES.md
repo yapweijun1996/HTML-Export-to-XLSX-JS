@@ -1,8 +1,8 @@
 # Known Issues
 
-Code review of `main` at `f7556fd`, performed 2026-10-13. Line references match
-`355281c`, which changed only the cellType context and the Globe3 quantity
-classification; that change was not part of the review.
+Code review of `main` at `f7556fd`, performed 2026-10-13. Line references in the
+details of fixed issues describe the code before the fix. Open issues reference the
+current source.
 
 Evidence levels:
 
@@ -10,30 +10,34 @@ Evidence levels:
   against `src/values.js`, or in a real exported workbook.
 - **Code** — found by reading the source; not yet reproduced.
 
+Regression tests for fixed issues are in
+[tests/unit/values.test.js](tests/unit/values.test.js) and
+[tests/browser/known-issues.test.js](tests/browser/known-issues.test.js).
+
 ## Summary
 
-| ID | Severity | Area | Issue | Evidence |
-|---|---|---|---|---|
-| BUG-01 | High | Values | Currency amounts always display the currency's default decimals | Verified |
-| BUG-02 | Medium | Values | Words that are also ISO codes (Top, Pen, Try, All, Cup) become currency numbers | Verified |
-| BUG-03 | Medium | Values | Typed numbers lose their source decimals and grouping | Verified |
-| BUG-04 | Medium | Styles | Inherited or legacy alignment keywords are ignored | Verified |
-| BUG-05 | Medium | Images | Images outside a td/th are dropped without a warning | Verified |
-| BUG-06 | Medium | Images | Alignment mode places images at the cell's top edge, over preceding text | Verified |
-| BUG-07 | Medium | Images | An image that overflows its cell rejects the whole export in the default mode | Verified |
-| BUG-08 | Low | Workbook | Rows below the exported grid are 0.75pt (1px) tall | Verified |
-| BUG-09 | Medium | Styles | Semi-transparent colors are written with an alpha byte that Excel ignores | Verified (output) |
-| BUG-10 | Low | API | Failures from generic `[data-xlsx-button]` buttons are silent | Code |
-| BUG-11 | Low | Images | Off-screen lazy images wait twice the timeout and are then dropped | Code |
-| BUG-12 | Low | Images | Image load errors are reported as Event objects | Code |
-| BUG-13 | Low | Workbook | Row heights are not capped at Excel's 409pt maximum | Code |
-| BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Code |
-| BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Code |
-| BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Code |
-| BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code |
-| BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code |
-| BUG-19 | Low | Images | Raster canvases have no size cap | Code |
-| BUG-20 | Low | Config | sheetName is not validated | Code |
+| ID | Severity | Area | Issue | Evidence | Status |
+|---|---|---|---|---|---|
+| BUG-01 | High | Values | Currency amounts always display the currency's default decimals | Verified | Fixed |
+| BUG-02 | Medium | Values | Words that are also ISO codes (Top, Pen, Try, All, Cup) become currency numbers | Verified | Fixed for mixed case |
+| BUG-03 | Medium | Values | Typed numbers lose their source decimals and grouping | Verified | Fixed |
+| BUG-04 | Medium | Styles | Inherited or legacy alignment keywords are ignored | Verified | Fixed |
+| BUG-05 | Medium | Images | Images outside a td/th are dropped without a warning | Verified | Fixed |
+| BUG-06 | Medium | Images | Alignment mode places images at the cell's top edge, over preceding text | Verified | Fixed |
+| BUG-07 | Medium | Images | An image that overflows its cell rejects the whole export in the default mode | Verified | Fixed |
+| BUG-08 | Low | Workbook | Rows below the exported grid are 0.75pt (1px) tall | Verified | Open |
+| BUG-09 | Medium | Styles | Semi-transparent colors are written with an alpha byte that Excel ignores | Verified (output) | Open |
+| BUG-10 | Low | API | Failures from generic `[data-xlsx-button]` buttons are silent | Code | Open |
+| BUG-11 | Low | Images | Off-screen lazy images wait twice the timeout and are then dropped | Code | Open |
+| BUG-12 | Low | Images | Image load errors are reported as Event objects | Code | Open |
+| BUG-13 | Low | Workbook | Row heights are not capped at Excel's 409pt maximum | Code | Open |
+| BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Code | Open |
+| BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Code | Open |
+| BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Code | Open |
+| BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code | Open |
+| BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Open |
+| BUG-19 | Low | Images | Raster canvases have no size cap | Code | Open |
+| BUG-20 | Low | Config | sheetName is not validated | Code | Open |
 
 ## Details
 
@@ -46,6 +50,9 @@ Evidence levels:
   decimal count from `Intl` for the currency only, never from the source text.
 - **Fix:** pass the source fraction length from `detectCurrency`. Use the larger of the
   source length and the currency default, or the source length alone.
+- **Status:** fixed. Amounts use the source length alone, so the workbook matches the
+  printform (`$ 100` displays `HKD 100`). A typed currency value without numeric display
+  text keeps the currency default.
 
 ### BUG-02 Words that are also ISO codes become currency numbers
 
@@ -56,6 +63,10 @@ Evidence levels:
   valid ISO 4217 codes.
 - **Fix:** accept only uppercase codes, and preferably only the configured document or
   cell currency. Other codes would require `data-excel-type="currency"`.
+- **Status:** fixed for mixed case. Codes must now be uppercase. Uppercase words such as
+  `TOP 10` still match, because restricting codes to the document currency would break the
+  documented support for explicit foreign-currency amounts; mark such cells
+  `data-excel-type="text"`.
 
 ### BUG-03 Typed numbers lose their source decimals and grouping
 
@@ -65,6 +76,8 @@ Evidence levels:
   `type === 'number'` ([src/values.js](src/values.js) lines 188-193).
 - **Fix:** derive a number format from the source text, for example `#,##0.00` when the
   source has grouping and two decimals.
+- **Status:** fixed. Typed numbers keep grouping, decimals and accounting parentheses.
+  Plain integers keep the General format.
 
 ### BUG-04 Inherited or legacy alignment keywords are ignored
 
@@ -77,6 +90,9 @@ Evidence levels:
   attribute fallback reads only the cell itself.
 - **Fix:** map the `-webkit-` and `-moz-` prefixed values, and `match-parent`. Read
   alignment from the uniform text-owning block, as is already done for fonts.
+- **Status:** fixed. Prefixed keywords are mapped, and alignment is read from the visible
+  text; verified in Chrome, Edge and Firefox. `match-parent` was not needed because
+  browsers resolve it in the computed value.
 
 ### BUG-05 Images outside a td/th are dropped without a warning
 
@@ -86,6 +102,8 @@ Evidence levels:
   otherwise ([src/layout.js](src/layout.js) lines 188-189).
 - **Fix:** anchor such images in precise mode against the root grid, or at least emit a
   warning such as `IMAGE_OUTSIDE_CELL`.
+- **Status:** fixed. Such images are placed at their rendered position in both placement
+  modes.
 
 ### BUG-06 Alignment mode places images at the cell's top edge, over preceding text
 
@@ -96,6 +114,9 @@ Evidence levels:
   position ([src/images.js](src/images.js) line 354).
 - **Fix:** start the flow at the first image's measured top relative to the cell, or use
   precise placement when the cell also contains text.
+- **Status:** fixed. Flows start at the images' rendered top and move up only as far as
+  the cell requires. Horizontal alignment is unchanged. A single centered image is no
+  longer centered vertically when its rendered position is known.
 
 ### BUG-07 An image that overflows its cell rejects the whole export in the default mode
 
@@ -106,6 +127,9 @@ Evidence levels:
   precise fallback in `placeImages` is never reached.
 - **Fix:** return `false` so the image falls back to precise placement, and emit a
   warning. Throw only for an explicitly forced flow.
+- **Status:** fixed. All placements of a cell are checked before any is written. An
+  unforced flow falls back to precise placement with `IMAGE_ALIGNMENT_FALLBACK`. A cell
+  attribute or an explicit `imageAlignment` still rejects.
 
 ### BUG-08 Rows below the exported grid are 0.75pt (1px) tall
 
@@ -195,7 +219,7 @@ Evidence levels:
 ### BUG-18 Shared-border propagation is quadratic in the cell count
 
 - **Cause:** `propagateSharedBorders` scans every cell for every bordered side
-  ([src/layout.js](src/layout.js) lines 243-317). Several thousand cells mean tens of
+  ([src/layout.js](src/layout.js) lines 247-321). Several thousand cells mean tens of
   millions of comparisons on the main thread.
 - **Fix:** index the cells by edge coordinate.
 

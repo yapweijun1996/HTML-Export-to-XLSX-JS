@@ -94,8 +94,29 @@ const explicitSymbols = [
     ['£', 'GBP'], ['₹', 'INR']
 ];
 
-export function currencyFormat(currency, locale = 'en-US', source = null) {
-    const decimals = new Intl.NumberFormat(locale, {
+// Decimal places written in the source text, so Excel displays a value as it was printed.
+function sourceDecimals(text, locale = 'en-US') {
+    const decimal = new Intl.NumberFormat(locale).formatToParts(1.5).find(part => part.type === 'decimal')?.value || '.';
+    const parts = String(text ?? '').split(decimal);
+    return parts.length === 2 ? parts[1].replace(/\P{Nd}/gu, '').length : 0;
+}
+
+// Typed numbers keep the grouping, decimal places and accounting negatives of their text.
+function numberFormat(text, locale = 'en-US') {
+    const display = String(text ?? '').trim().replace(/\s/g, ' ');
+    const formatter = new Intl.NumberFormat(locale);
+    const group = formatter.formatToParts(12345).find(part => part.type === 'group')?.value.replace(/\s/g, ' ');
+    const decimal = formatter.formatToParts(1.5).find(part => part.type === 'decimal')?.value || '.';
+    const grouped = Boolean(group) && display.split(decimal)[0].includes(group);
+    const decimals = sourceDecimals(display, locale);
+    const accounting = /^\(.*\)$/.test(display);
+    if (!grouped && !decimals && !accounting) return undefined;
+    const number = (grouped ? '#,##0' : '0') + (decimals ? '.' + '0'.repeat(decimals) : '');
+    return accounting ? number + ';(' + number + ')' : number;
+}
+
+export function currencyFormat(currency, locale = 'en-US', source = null, sourceDecimalPlaces) {
+    const decimals = sourceDecimalPlaces ?? new Intl.NumberFormat(locale, {
         style: 'currency', currency
     }).resolvedOptions().maximumFractionDigits;
     const fraction = decimals ? '.' + '0'.repeat(decimals) : '';
@@ -136,8 +157,9 @@ export function detectCurrency(rawText, options = {}) {
         if (takeSymbol(symbol)) { code = currency; break; }
     }
     if (!code) {
-        const prefix = text.match(/^([A-Za-z]{3})\s*/);
-        const suffix = text.match(/\s*([A-Za-z]{3})$/);
+        // ISO codes are uppercase. Words such as Top, Pen or Try are also codes and stay text.
+        const prefix = text.match(/^([A-Z]{3})\s*/);
+        const suffix = text.match(/\s*([A-Z]{3})$/);
         const explicit = prefix || suffix;
         if (explicit) {
             try { code = validateCurrency(explicit[1]); } catch { return null; }
@@ -159,7 +181,7 @@ export function detectCurrency(rawText, options = {}) {
     if ((accounting || sign) && /^[+\-(]/.test(text)) return null;
     const value = parseLocalizedNumber(accounting ? '(' + text + ')' : sign + text, locale);
     return value === null ? null : { value, numFmt: currencyFormat(code, options.locale,
-        options.currencyDisplay === 'source' ? source : null) };
+        options.currencyDisplay === 'source' ? source : null, sourceDecimals(text, locale)) };
 }
 
 export function parseCellValue(text, element, options = {}) {
@@ -189,7 +211,11 @@ export function parseCellValue(text, element, options = {}) {
         const value = parseLocalizedNumber(raw, cellOptions.locale);
         if (value === null) throw new TypeError('Invalid explicitly typed numeric cell');
         if (type === 'currency' && !cellOptions.currency) throw new TypeError('Currency cell requires a currency');
-        return { value, numFmt: type === 'currency' ? currencyFormat(cellOptions.currency, cellOptions.locale) : undefined };
+        // Formats follow the displayed text. A declared value behind other text keeps the defaults.
+        const shown = parseLocalizedNumber(text, cellOptions.locale) === null ? null : text;
+        if (type === 'number') return { value, numFmt: shown === null ? undefined : numberFormat(shown, cellOptions.locale) };
+        return { value, numFmt: currencyFormat(cellOptions.currency, cellOptions.locale, null,
+            shown === null ? undefined : sourceDecimals(shown, cellOptions.locale)) };
     }
     // Text beginning with "=" stays a string; HTML text is never promoted to formulas.
     return { value: String(raw ?? '') };

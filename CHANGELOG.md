@@ -63,6 +63,13 @@
   snapshot to bound the extra work for large tables.
 - Add unit and browser regressions with real XLSX read-back, pixel checks and CORS
   responses against both bundles in Chrome, Edge and Firefox.
+- Display amounts with the decimal places of their text and typed numbers with
+  their grouping and decimals. Keep mixed-case words such as Top 10 as text.
+- Follow rendered horizontal alignment, including legacy row align attributes and
+  inner center/div align blocks. Place images outside table cells at their rendered
+  position, start aligned image flows at the images' rendered top, and place an
+  unforced flow that overflows its cell at the rendered position with a warning.
+- Record the code review findings and their status in KNOWN_ISSUES.md.
 
 ## 0.1.0 — Preview
 

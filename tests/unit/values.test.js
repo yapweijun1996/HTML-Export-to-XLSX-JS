@@ -90,7 +90,43 @@ test('fragment attributes resolve within their own cell boundary', () => {
         value: 12.5, numFmt: currencyFormat('HKD')
     });
     const inner = element('TD', {}, element('TABLE', {}, outer));
-    assert.equal(parseCellValue('$ 10', inner, { currency: 'USD' }).numFmt, currencyFormat('USD'));
+    assert.equal(parseCellValue('$ 10', inner, { currency: 'USD' }).numFmt, currencyFormat('USD', 'en-US', null, 0));
+});
+
+test('amount and typed number formats keep the decimal places and grouping of their text', () => {
+    const hkd = { currency: 'HKD', locale: 'en-HK' };
+    assert.deepEqual(detectCurrency('$ 12.3456', hkd), { value: 12.3456, numFmt: '"HKD" #,##0.0000;("HKD" #,##0.0000)' });
+    assert.equal(detectCurrency('$ 12.5', hkd).numFmt, '"HKD" #,##0.0;("HKD" #,##0.0)');
+    assert.equal(detectCurrency('$ 100', hkd).numFmt, '"HKD" #,##0;("HKD" #,##0)');
+    assert.equal(detectCurrency('($ 1,800.00)', hkd).numFmt, currencyFormat('HKD'));
+    assert.equal(detectCurrency('1.234,5 €', { locale: 'de-DE' }).numFmt, '"EUR" #,##0.0;("EUR" #,##0.0)');
+    assert.equal(currencyFormat('KWD'), '"KWD" #,##0.000;("KWD" #,##0.000)');
+
+    const cell = attrs => ({ getAttribute: key => attrs[key] ?? null });
+    const number = cell({ 'data-excel-type': 'number' });
+    for (const [text, locale, value, numFmt] of [
+        ['2.00', 'en-US', 2, '0.00'], ['1,000', 'en-US', 1000, '#,##0'], ['12', 'en-US', 12, undefined],
+        ['(1,234.50)', 'en-US', -1234.5, '#,##0.00;(#,##0.00)'], ['-0.5', 'en-US', -0.5, '0.0'],
+        ['1 234,5', 'fr-FR', 1234.5, '#,##0.0'], ['1.234', 'de-DE', 1234, '#,##0']
+    ]) assert.deepEqual(parseCellValue(text, number, { locale }), { value, numFmt }, text);
+    assert.deepEqual(parseCellValue('2.00', cell({}), { cellType: () => 'number' }), { value: 2, numFmt: '0.00' });
+    assert.deepEqual(parseCellValue('1.250', cell({ 'data-excel-type': 'currency' }), { currency: 'HKD' }),
+        { value: 1.25, numFmt: '"HKD" #,##0.000;("HKD" #,##0.000)' });
+    // A declared value behind non-numeric display text keeps the default formats.
+    assert.deepEqual(parseCellValue('Twelve', cell({ 'data-excel-type': 'number', 'data-excel-value': '12.50' })),
+        { value: 12.5, numFmt: undefined });
+    assert.deepEqual(parseCellValue('Twelve', cell({ 'data-excel-type': 'currency', 'data-excel-value': '12.5' }), { currency: 'HKD' }),
+        { value: 12.5, numFmt: currencyFormat('HKD') });
+});
+
+test('mixed-case words that are also ISO codes stay text', () => {
+    const cell = { getAttribute: () => null };
+    for (const text of ['Top 10', 'pen 2', 'Try 3', 'all 5', 'Cup 1', '10 Pen', 'Mad 4']) {
+        assert.equal(detectCurrency(text, { currency: 'HKD' }), null, text);
+        assert.deepEqual(parseCellValue(text, cell, { currency: 'HKD' }), { value: text }, text);
+    }
+    assert.equal(detectCurrency('USD 20.25').value, 20.25);
+    assert.equal(detectCurrency('100 JPY').value, 100);
 });
 
 test('currency aliases, suffix symbols and signed accounting amounts retain numeric values', () => {

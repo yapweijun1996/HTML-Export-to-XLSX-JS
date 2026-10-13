@@ -104,8 +104,13 @@ Precedence is: explicit currency in cell text, cell currency attribute, API
 currency option, then container currency attribute. The generic API leaves a bare
 $ as text when no currency is configured; it does not guess a country.
 
-Currency codes and decimal places use the runtime's Intl support. Explicit ISO
-prefixes or suffixes support currencies beyond a hardcoded list. Common
+Currency codes use the runtime's Intl support. Amounts display the decimal places
+written in their text, so $ 12.3456 shows four decimals and $ 100 none; a typed
+currency value without numeric display text uses the currency's standard decimals.
+Explicit ISO prefixes or suffixes support currencies beyond a hardcoded list. ISO
+codes must be uppercase: mixed-case words that are also codes, such as Top 10 or
+pen 2, remain text. Uppercase words such as TOP 10 still match; mark them
+data-excel-type="text". Common
 unambiguous symbols such as HK$, US$, S$, NT$, EUR's euro symbol, GBP's pound symbol
 and INR's rupee symbol are recognized. Other symbols require explicit currency
 configuration or a typed cell. Locale describes input formatting, not currency.
@@ -121,6 +126,9 @@ minus signs are supported, including -$1,234.56, ($1,234.56) and 1.234,56 €
 <td data-excel-type="number" data-excel-value="1200.50">1,200.50</td>
 ~~~
 
+Typed numbers keep the grouping, decimal places and accounting parentheses of their
+displayed text, so 2.00 displays as 2.00 and 1,250 keeps its separator. A declared
+data-excel-value behind non-numeric display text uses the General format.
 The data-excel-value attribute uses the selected locale. Explicit numeric cells
 reject invalid grouping (including separators in the fractional part), more than
 15 significant decimal digits, values outside the safe integer magnitude, and
@@ -154,6 +162,8 @@ browser security restrictions cannot be bypassed. Image failures produce warning
 while valid content continues. Inspect warnings before treating an export as
 complete. Image load waits and processing concurrency are bounded. Images beside
 nested tables are included; images with zero rendered width or height are omitted.
+Images outside table cells, such as a logo in a div, are placed at their rendered
+position in both placement modes.
 Fetch fallback uses the browser-selected currentSrc (including picture/srcset)
 and rasterizes the fetched image to PNG, including SVG and WebP sources.
 Identical raster bytes and formats share one workbook media entry, including across
@@ -165,7 +175,9 @@ fixed image sizes and avoid ExcelJS 4.4's invalid attribute on one-cell anchors.
 Warnings include a specific code and, when available, source, error and count.
 Source URLs omit credentials, query parameters and fragments; inline data is not
 copied into warnings. IMAGE_CANVAS_FALLBACK indicates a recoverable conversion
-attempt; IMAGE_SKIPPED indicates an omitted image. If onWarning throws, the export
+attempt; IMAGE_SKIPPED indicates an omitted image. IMAGE_ALIGNMENT_FALLBACK
+indicates images placed at their rendered position because an unforced alignment
+flow did not fit their cell. If onWarning throws, the export
 rejects and a bound button is restored, including after a font-readiness timeout.
 
 Exclusion selectors apply to descendants inside cells as well as whole tables.
@@ -176,7 +188,9 @@ filter, not an authorization boundary: protected data must not be sent to the pa
 Filtered text retains text case transformations and whitespace modes. Excluded
 content does not contribute font size, weight or descendant padding. Backgrounds
 resolve from the nearest visible ancestor, and RTL start/end alignment respects
-the element's direction. A table used directly as root retains its background and borders.
+the element's direction. Horizontal alignment follows the rendered text, including
+legacy align attributes on rows and inner blocks such as center or div align.
+A table used directly as root retains its background and borders.
 Uniform inline font families, colors and italics are read from visible text rather
 than only the outer cell. Underline and strike-through decorations include inline
 ancestors. Mixed inline properties retain the cell-level fallback by default.
@@ -220,9 +234,13 @@ center and right positioning, without fixed pixel compensation. Inline and stack
 images retain their spacing. Alignment precedence is the cell's
 data-excel-image-align attribute, an explicitly supplied imageAlignment option,
 CSS text alignment, then the default inline flow. Inline images wrap by available
-width rather than a fixed image count. If a forced flow exceeds the cell's size,
-the export rejects instead of overlapping images; enlarge the HTML cell, reduce
-imageWidthScale or use precise placement. Precise mode maps the original image
+width rather than a fixed image count. Vertically, a flow starts at the images'
+rendered top, so it does not cover text above them, and moves up only as far as the
+cell requires. If a forced flow (the cell attribute or an explicit imageAlignment)
+exceeds the cell's size, the export rejects instead of overlapping images; enlarge
+the HTML cell, reduce imageWidthScale or use precise placement. An unforced flow
+that does not fit places those images at their rendered positions and warns with
+IMAGE_ALIGNMENT_FALLBACK. Precise mode maps the original image
 coordinates through all spanned columns and rows, without fixed pixel compensation.
 
 The grid is reconstructed from visible table geometry. Meaningful cells colliding

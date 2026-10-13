@@ -185,10 +185,16 @@ export function createLayout(dependencies) {
 			if (isElementExcluded(img, root)) continue;
 			const rect = img.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0) continue;
-			const owner = img.closest('td, th');
-			if (!owner || !root.contains(owner)) continue;
-			let parentCell = imageOwners.get(owner);
-			if (!parentCell) {
+			const left = snapToPrecision(rect.left + window.scrollX - rootLeft);
+			const top = snapToPrecision(rect.top + window.scrollY - rootTop);
+			const ownerCell = img.closest('td, th');
+			const owner = ownerCell && root.contains(ownerCell) ? ownerCell : null;
+			let parentCell = owner && imageOwners.get(owner);
+			if (!owner) {
+				// Images outside table cells, such as a letterhead logo, keep their rendered position.
+				parentCell = { element: img, outsideCell: true, bounds: { left, top, width: rect.width, height: rect.height },
+					sheetPosition: { colStart: resolveEdgeIndex(columnEdges, left, 0) + 1, rowStart: resolveEdgeIndex(rowEdges, top, 0) + 1 } };
+			} else if (!parentCell) {
 				const descriptor = getDescriptor(owner);
 				if (!descriptor) continue;
 				parentCell = {
@@ -200,9 +206,7 @@ export function createLayout(dependencies) {
 				};
 				imageOwners.set(owner, parentCell);
 			}
-			images.push({ element: img, parentCell, width: rect.width, height: rect.height,
-				left: snapToPrecision(rect.left + window.scrollX - rootLeft),
-				top: snapToPrecision(rect.top + window.scrollY - rootTop) });
+			images.push({ element: img, parentCell, width: rect.width, height: rect.height, left, top });
 		}
 
 		const pushDeferredBorderInstruction = (descriptor, side, style) => {

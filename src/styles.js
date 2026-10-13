@@ -676,9 +676,12 @@ export function createStyles(dependencies) {
 			baseline: 'bottom'
 		};
 
-		const cssHorizontal = normalize(cs.textAlign);
+		// Legacy align attributes compute to vendor keywords such as -webkit-center or -moz-center.
+		// Inner blocks such as <center> or <div align> set the alignment their text renders with.
+		const horizontalKeyword = value => normalize(value)?.replace(/^-(?:webkit|moz|internal)-/, '').replace(/-or-inherit$/, '');
+		const cssHorizontal = horizontalKeyword(uniformTextProperty(cell, cs, 'textAlign'));
 		const cssVertical = normalize(cs.verticalAlign);
-		const attrHorizontal = normalize(cell.getAttribute('align') || cell.align);
+		const attrHorizontal = horizontalKeyword(cell.getAttribute('align') || cell.align);
 		const attrVertical = normalize(cell.getAttribute('valign') || cell.vAlign);
 
 		const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || undefined;
