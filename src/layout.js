@@ -93,7 +93,7 @@ export function createLayout(dependencies) {
 			const cs = window.getComputedStyle(cell);
 			const font = extractFont(cell, cs);
 			const alignment = extractAlignment(cell, cs, textValue);
-			const borders = extractBorders(cs, cell);
+			const borders = extractBorders(cs);
 			const fillColor = extractBackground(cell, root);
 			const currencyMatch = parseCellValue(textValue, cell);
 			const exportedValue = currencyMatch.value;
@@ -232,7 +232,7 @@ export function createLayout(dependencies) {
 		for (const outerCell of nestedCells) {
 			const descriptor = getDescriptor(outerCell);
 			if (!descriptor) continue;
-			const borders = extractBorders(window.getComputedStyle(outerCell), outerCell);
+			const borders = extractBorders(window.getComputedStyle(outerCell));
 			if (!borders) continue;
 			applyOuterElementBorders(descriptor, borders);
 		}
@@ -242,7 +242,7 @@ export function createLayout(dependencies) {
 			const descriptor = getDescriptor(tableElement);
 			if (!descriptor) continue;
 			const csTable = window.getComputedStyle(tableElement);
-			const borders = extractBorders(csTable, tableElement);
+			const borders = extractBorders(csTable);
 			if (borders) {
 				applyOuterElementBorders(descriptor, borders);
 			}
@@ -294,7 +294,8 @@ export function createLayout(dependencies) {
 			cells,
 			images,
 			pageBreakRows: collectPageBreakRows(),
-			deferredBorders
+			deferredBorders,
+			refinedGrid: preserveEdges
 		};
 	};
 

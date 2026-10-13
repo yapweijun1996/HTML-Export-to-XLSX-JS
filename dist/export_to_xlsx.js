@@ -1,7 +1,6 @@
 /*! HTML Export to XLSX JS v0.1.0 | MIT | Copyright (c) 2026 YAP WEI JUN */
 (() => {
   // src/values.js
-  var escapeRegExp = (text) => String(text).replace(/[.*+?^$()|[\]\\{}]/g, "\\$&");
   var currencies = typeof Intl.supportedValuesOf === "function" ? new Set(Intl.supportedValuesOf("currency")) : null;
   function validateCurrency(value) {
     if (value === void 0 || value === null || value === "") return null;
@@ -351,6 +350,7 @@
     return Object.freeze(object);
   };
   freezeDeep(DEFAULT_CONFIG);
+  var sanitizeSheetName = (name) => String(name || "").replace(/[\\/*?:[\]]/g, "").replace(/^'+|'+$/g, "").slice(0, 31).replace(/'+$/, "") || "Sheet1";
   function resolveOptions(root, options = {}) {
     for (const key of Object.keys(options)) {
       if (!allowed.has(key)) throw new TypeError("Unknown export option: " + key);
@@ -393,6 +393,9 @@
     for (const selector of [...config.BLACKLIST_SELECTORS, config.PAGE_BREAK_SELECTOR]) root.matches(selector);
     if (options.onWarning !== void 0 && typeof options.onWarning !== "function") throw new TypeError("onWarning must be a function");
     if (options.cellType !== void 0 && typeof options.cellType !== "function") throw new TypeError("cellType must be a function");
+    if (typeof config.SHEET_NAME !== "string") throw new TypeError("sheetName must be a string");
+    config.SHEET_NAME = sanitizeSheetName(config.SHEET_NAME);
+    if (config.SHEET_NAME.toLowerCase() === "history") throw new RangeError("sheetName History is reserved by Excel");
     config.BLACKLIST_SELECTORS = [...config.BLACKLIST_SELECTORS];
     const page = structuredClone(options.pageSetup || {});
     config.PAGE_SETUP = {
@@ -487,10 +490,10 @@
       const scaledPx = Math.max(0, px) * effectiveScale;
       return Math.round(scaledPx * POINTS_PER_CSS_PX * 100) / 100;
     };
-    const pxToColumnWidth = (px, scale = 1) => {
-      const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
+    const pxToColumnWidth = (px, scale = 1, minPx = CONFIG.MIN_COL_WIDTH_PX) => {
+      const targetPx = Math.max(minPx, px);
       const effectiveScale = toPositiveNumber(scale) || 1;
-      const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
+      const scaledPx = Math.max(minPx, targetPx * effectiveScale);
       const finalAdjustment = toPositiveNumber(CONFIG.COLUMN_WIDTH_SCALE) || 1;
       return Math.floor(scaledPx * finalAdjustment / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
     };
@@ -597,13 +600,25 @@
       }
       return clusters.map((cluster, index) => index === clusters.length - 1 ? cluster.last : cluster.first);
     };
+    const MAX_ROW_HEIGHT_PT = 409;
+    const splitTallRows = (edges) => {
+      const maxPx = (MAX_ROW_HEIGHT_PT - 1) / (POINTS_PER_CSS_PX * Math.max(ROW_SCALE, FONT_SCALE));
+      const result = [];
+      edges.forEach((edge, index) => {
+        const span = index ? edge - edges[index - 1] : 0;
+        const parts = Math.ceil(span / maxPx);
+        for (let part = 1; part < parts; part++) result.push(snapToPrecision(edges[index - 1] + span * part / parts));
+        result.push(edge);
+      });
+      return result;
+    };
     const isFiniteNumber = (value) => typeof Number.isFinite === "function" ? Number.isFinite(value) : isFinite(value);
-    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, isFiniteNumber };
+    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, MAX_ROW_HEIGHT_PT, splitTallRows, isFiniteNumber };
   }
 
   // src/styles.js
   function createStyles(dependencies) {
-    const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp: escapeRegExp2, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
+    const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
     const COLOR_CANVAS_CTX = (function() {
       if (typeof document === "undefined") return null;
       const canvas = document.createElement("canvas");
@@ -724,12 +739,12 @@
         return null;
       }
     };
-    const colorToARGB = (value) => {
-      const key = value || "";
+    const colorToARGB = (value, backdrop = "FFFFFFFF") => {
+      const key = (value || "") + "|" + backdrop;
       if (COLOR_CACHE.has(key)) {
         return COLOR_CACHE.get(key);
       }
-      const parsed = parseCssColor(key);
+      const parsed = parseCssColor(value || "");
       if (!parsed) {
         COLOR_CACHE.set(key, null);
         return null;
@@ -739,7 +754,9 @@
         COLOR_CACHE.set(key, null);
         return null;
       }
-      const parts = [alphaByte, parsed.r, parsed.g, parsed.b].map((component) => toHexByte(component));
+      const alpha = Math.min(1, parsed.a);
+      const under = [2, 4, 6].map((index) => parseInt(backdrop.slice(index, index + 2), 16));
+      const parts = [255, ...[parsed.r, parsed.g, parsed.b].map((channel, index) => channel * alpha + under[index] * (1 - alpha))].map((component) => toHexByte(component));
       if (parts.some((component) => component === null)) {
         COLOR_CACHE.set(key, null);
         return null;
@@ -784,77 +801,7 @@
           return styleByWidth();
       }
     };
-    const BORDER_STYLE_KEYWORDS = /* @__PURE__ */ new Set([
-      "none",
-      "hidden",
-      "dotted",
-      "dashed",
-      "solid",
-      "double",
-      "groove",
-      "ridge",
-      "inset",
-      "outset",
-      "dash-dot",
-      "dashdot",
-      "dot-dash",
-      "dash-dot-dot",
-      "dashdotdot",
-      "dot-dot-dash"
-    ]);
-    const parseBorderShorthand = (value) => {
-      if (!value) return null;
-      const tokens = value.split(/\s+/).map((token) => token.trim().replace(/!important$/i, "")).filter((token) => token && token.toLowerCase() !== "!important");
-      if (!tokens.length) return null;
-      let width = null;
-      let style = null;
-      const colorParts = [];
-      for (const token of tokens) {
-        if (width === null) {
-          const widthCandidate = parseFloat(token);
-          if (Number.isFinite(widthCandidate)) {
-            width = widthCandidate;
-            continue;
-          }
-        }
-        if (style === null) {
-          const lowerToken = token.toLowerCase();
-          if (BORDER_STYLE_KEYWORDS.has(lowerToken)) {
-            style = token;
-            continue;
-          }
-        }
-        colorParts.push(token);
-      }
-      return {
-        width,
-        style,
-        color: colorParts.length ? colorParts.join(" ") : null
-      };
-    };
-    const matchInlineStyleValue = (styleText, property) => {
-      if (!styleText || !property) return null;
-      const pattern = new RegExp(`(?:^|;)\\s*${escapeRegExp2(property)}\\s*:\\s*([^;]+)`, "i");
-      const match = pattern.exec(styleText);
-      if (!match) return null;
-      const raw = match[1]?.trim().replace(/;$/, "");
-      if (!raw) return null;
-      return raw.replace(/\s*!important\s*$/i, "").trim() || null;
-    };
-    const parseInlineBorderFromAttribute = (element, side) => {
-      if (!element || typeof element.getAttribute !== "function") return null;
-      const styleAttr = element.getAttribute("style");
-      if (!styleAttr) return null;
-      if (side) {
-        const specific = matchInlineStyleValue(styleAttr, `border-${side}`);
-        if (specific) {
-          return parseBorderShorthand(specific);
-        }
-      }
-      const generic = matchInlineStyleValue(styleAttr, "border");
-      return generic ? parseBorderShorthand(generic) : null;
-    };
-    const extractBorders = (cs, element) => {
+    const extractBorders = (cs) => {
       const sides = ["top", "right", "bottom", "left"];
       const border = {};
       for (const side of sides) {
@@ -867,55 +814,6 @@
           style: excelStyle,
           color: color ? { argb: color } : void 0
         };
-      }
-      if (element && element.style) {
-        const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-        for (const side of sides) {
-          if (border[side]) continue;
-          const widthStr = element.style[`border${capitalize(side)}Width`];
-          const styleStr = element.style[`border${capitalize(side)}Style`];
-          const colorStr = element.style[`border${capitalize(side)}Color`];
-          const shorthand = element.style[`border${capitalize(side)}`];
-          let width = Number.parseFloat(widthStr);
-          width = Number.isFinite(width) ? width : null;
-          let styleValue = styleStr || "";
-          let colorValue = colorStr || "";
-          if (width == null || width <= 0 || !styleValue || !colorValue) {
-            const parsed = parseBorderShorthand(shorthand);
-            if (parsed) {
-              if ((width == null || width <= 0) && Number.isFinite(parsed.width)) {
-                width = parsed.width;
-              }
-              if (!styleValue && parsed.style) {
-                styleValue = parsed.style;
-              }
-              if ((!colorValue || !colorValue.trim()) && parsed.color) {
-                colorValue = parsed.color;
-              }
-            }
-          }
-          if (width == null || width <= 0 || !styleValue || !colorValue) {
-            const parsedAttr = parseInlineBorderFromAttribute(element, side);
-            if (parsedAttr) {
-              if ((width == null || width <= 0) && Number.isFinite(parsedAttr.width)) {
-                width = parsedAttr.width;
-              }
-              if (!styleValue && parsedAttr.style) {
-                styleValue = parsedAttr.style;
-              }
-              if ((!colorValue || !colorValue.trim()) && parsedAttr.color) {
-                colorValue = parsedAttr.color;
-              }
-            }
-          }
-          const excelStyle = widthToBorderStyle(width, styleValue);
-          if (!excelStyle) continue;
-          const color = colorToARGB(colorValue);
-          border[side] = {
-            style: excelStyle,
-            color: color ? { argb: color } : void 0
-          };
-        }
       }
       return Object.keys(border).length ? border : null;
     };
@@ -996,8 +894,10 @@
       if (!backgroundCaches.has(root)) backgroundCaches.set(root, /* @__PURE__ */ new WeakMap());
       const cache = backgroundCaches.get(root);
       if (cache.has(element)) return cache.get(element);
-      let color = dependencies.isElementExcluded(element, root) ? null : colorToARGB(getElementStyle(element).backgroundColor);
-      if (!color && element !== root) color = extractBackground(element.parentElement, root);
+      const value = dependencies.isElementExcluded(element, root) ? "" : getElementStyle(element).backgroundColor;
+      const opaque = parseCssColor(value)?.a >= 1;
+      const beneath = !opaque && element !== root ? extractBackground(element.parentElement, root) : null;
+      const color = colorToARGB(value, beneath || "FFFFFFFF") || beneath;
       cache.set(element, color);
       return color;
     };
@@ -1226,12 +1126,12 @@
       }
       return alignment;
     };
-    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
   }
 
   // src/dom.js
   function createDom(dependencies) {
-    const { CONFIG, debugLog, snapToPrecision, normalizeEdges } = dependencies;
+    const { CONFIG, debugLog, snapToPrecision, normalizeEdges, splitTallRows } = dependencies;
     const normalizedBlacklistSelectors = /* @__PURE__ */ (() => {
       let cachedSelectors = null;
       return () => {
@@ -1539,7 +1439,7 @@
       }
       const gridEdges = preserveEdges ? (edges) => Array.from(edges).sort((a, b) => a - b) : normalizeEdges;
       const columnEdges = gridEdges(colEdgeSet);
-      const rowEdges = gridEdges(rowEdgeSet);
+      const rowEdges = splitTallRows(gridEdges(rowEdgeSet));
       return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
     };
     return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, isElementExcluded, getElementStyle: computedStyle, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
@@ -1629,7 +1529,7 @@
         const cs = window.getComputedStyle(cell);
         const font = extractFont(cell, cs);
         const alignment = extractAlignment(cell, cs, textValue);
-        const borders = extractBorders(cs, cell);
+        const borders = extractBorders(cs);
         const fillColor = extractBackground(cell, root);
         const currencyMatch = parseCellValue2(textValue, cell);
         const exportedValue = currencyMatch.value;
@@ -1760,7 +1660,7 @@
       for (const outerCell of nestedCells) {
         const descriptor = getDescriptor(outerCell);
         if (!descriptor) continue;
-        const borders = extractBorders(window.getComputedStyle(outerCell), outerCell);
+        const borders = extractBorders(window.getComputedStyle(outerCell));
         if (!borders) continue;
         applyOuterElementBorders(descriptor, borders);
       }
@@ -1769,7 +1669,7 @@
         const descriptor = getDescriptor(tableElement);
         if (!descriptor) continue;
         const csTable = window.getComputedStyle(tableElement);
-        const borders = extractBorders(csTable, tableElement);
+        const borders = extractBorders(csTable);
         if (borders) {
           applyOuterElementBorders(descriptor, borders);
         }
@@ -1816,7 +1716,8 @@
         cells,
         images,
         pageBreakRows: collectPageBreakRows(),
-        deferredBorders
+        deferredBorders,
+        refinedGrid: preserveEdges
       };
     };
     return { buildLayoutModel };
@@ -2355,12 +2256,12 @@
 
   // src/workbook.js
   function createWorkbookWriter(dependencies) {
-    const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
+    const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, MAX_ROW_HEIGHT_PT, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
     const blankBorderExclusions = /* @__PURE__ */ new WeakMap();
-    const applyColumnWidths = (worksheet, columnWidthsPx) => {
+    const applyColumnWidths = (worksheet, columnWidthsPx, minColumnWidthPx) => {
       let totalPixels = 0, writtenPixels = 0;
       worksheet.columns = columnWidthsPx.map((px) => {
-        totalPixels += pxToColumnWidth(px, EXPORT_SCALE) * EXCEL_MAX_DIGIT_WIDTH;
+        totalPixels += pxToColumnWidth(px, EXPORT_SCALE, minColumnWidthPx) * EXCEL_MAX_DIGIT_WIDTH;
         const pixels = Math.max(1, Math.round(totalPixels) - writtenPixels);
         writtenPixels += pixels;
         return { width: Math.floor(pixels / EXCEL_MAX_DIGIT_WIDTH * 256) / 256 };
@@ -2595,7 +2496,14 @@
         const minimum = lines * Math.ceil(fontSize * 4 / 3 / 0.75) * 0.75 + 0.75;
         let height = 0;
         for (let r = cell.rowStart + 1; r <= cell.rowEnd; r++) height += worksheet.getRow(r).height;
-        if (height < minimum) worksheet.getRow(cell.rowEnd).height += minimum - height;
+        let missing = minimum - height;
+        for (let r = cell.rowEnd; r > cell.rowStart && missing > 0; r--) {
+          const row = worksheet.getRow(r);
+          const added = Math.min(missing, MAX_ROW_HEIGHT_PT - row.height);
+          if (added <= 0) continue;
+          row.height += added;
+          missing -= added;
+        }
       }
     };
     const applyPageSetupOptions = (worksheet) => {
@@ -2628,16 +2536,10 @@
       return workbook;
     };
     const prepareWorksheet = (workbook, layoutModel) => {
-      const defaultRowHeightPt = Math.max(
-        pxToPoint(CONFIG.MIN_ROW_HEIGHT_PX, ROW_SCALE),
-        pxToPoint(CONFIG.MIN_ROW_HEIGHT_PX, FONT_SCALE)
-      );
-      const worksheet = workbook.addWorksheet(sanitizeSheetName(CONFIG.SHEET_NAME), {
-        properties: { defaultRowHeight: defaultRowHeightPt }
-      });
+      const worksheet = workbook.addWorksheet(sanitizeSheetName(CONFIG.SHEET_NAME));
       applyPageSetupOptions(worksheet);
       debugLog("Applying column widths and row heights");
-      applyColumnWidths(worksheet, layoutModel.columnWidthsPx);
+      applyColumnWidths(worksheet, layoutModel.columnWidthsPx, layoutModel.refinedGrid ? 0 : void 0);
       applyRowHeights(worksheet, layoutModel.rowHeightsPx);
       debugLog("Writing cell content");
       writeCellsToSheet(worksheet, layoutModel);
@@ -2719,7 +2621,6 @@
         if (CONFIG.NORMAL_FONT) xlsx.addStyles = originalAddStyles;
       }
     };
-    const sanitizeSheetName = (name) => (name || "Sheet1").replace(/[\\/*?:\[\]]/g, "").slice(0, 31) || "Sheet1";
     return { applyColumnWidths, applyRowHeights, applyPageBreaks, writeCellsToSheet, applyDeferredBorders, applyPageSetupOptions, createWorkbook, prepareWorksheet, processAndPlaceImages, logWorkbookMediaSummary, writeWorkbookToBuffer, sanitizeSheetName };
   }
 
@@ -2770,10 +2671,12 @@
       warnings.push(warning);
       options.onWarning?.(warning);
     };
+    if (options.rowScale !== void 0 && CONFIG.ROW_SCALE < CONFIG.FONT_SCALE) {
+      warnLog("rowScale is below fontScale; rows use fontScale so their text is not clipped", { code: "ROW_SCALE_FLOOR" });
+    }
     const dependencies = {
       CONFIG,
       ExcelJS,
-      escapeRegExp,
       warnLog,
       errorLog: warnLog,
       debugLog: (...args) => {

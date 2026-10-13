@@ -71,7 +71,7 @@ to the browser console. Loading the script after DOMContentLoaded is supported.
 | locale | container attribute, otherwise en-US | Input separators and localized digits |
 | cellType | unset | Callback (element, text, context) returning text, number, currency or undefined for cells without type metadata |
 | filename | document title plus timestamp | Optional .xlsx filename |
-| sheetName | PrintForm | Excel worksheet name |
+| sheetName | PrintForm | Excel worksheet name; characters Excel forbids and edge apostrophes are removed, at most 31 characters, History is rejected |
 | download | true | Return bytes without downloading when false |
 | exceljs | globalThis.ExcelJS | Optional explicit dependency |
 | exclude | ['[data-xlsx-ignore]'] | Omit elements and descendants |
@@ -79,11 +79,11 @@ to the browser console. Loading the script after DOMContentLoaded is supported.
 | respectPageBreaks | true | Convert Fit To to percentage scaling for marked pages |
 | pageSetup | A4 portrait, fit one page wide | ExcelJS setup overrides; margins merge; marked pages use percentage scaling |
 | edgeTolerancePx | 2 | Coordinate clustering tolerance |
-| exportScale, rowScale | 1 | Export and row size scaling |
+| exportScale, rowScale | 1 | Export and row size scaling; rows never scale below fontScale (ROW_SCALE_FLOOR warns) |
 | fontScale | 0.9 | Font size scaling |
 | normalFont | null | Optional { name, size } for the workbook Normal style and column metrics |
 | columnWidthScale | 1 | Column width adjustment |
-| minColumnWidthPx | 10 | Minimum width of a grid fragment |
+| minColumnWidthPx | 10 | Minimum width of a grid fragment; a GRID_REFINED grid keeps measured widths |
 | preserveSingleLine | false | Keep all visibly single-line labels on one line with Shrink to Fit |
 | preserveEmailAddresses | false | Fit a whole email address and optional parenthesized contact note on one line |
 | preserveRichText | false | Retain mixed visible inline font runs in string cells |
@@ -183,7 +183,8 @@ Source URLs omit credentials, query parameters and fragments; inline data is not
 copied into warnings. IMAGE_CANVAS_FALLBACK indicates a recoverable conversion
 attempt; IMAGE_SKIPPED indicates an omitted image. IMAGE_ALIGNMENT_FALLBACK
 indicates images placed at their rendered position because an unforced alignment
-flow did not fit their cell. If onWarning throws, the export
+flow did not fit their cell. ROW_SCALE_FLOOR indicates an explicit rowScale below
+fontScale; rows then use fontScale so their text is not clipped. If onWarning throws, the export
 rejects and a bound button is restored, including after a font-readiness timeout.
 
 Exclusion selectors apply to descendants inside cells as well as whole tables.
@@ -193,7 +194,9 @@ preserves explicit line breaks without changing the source DOM. This is an expor
 filter, not an authorization boundary: protected data must not be sent to the page.
 Filtered text retains text case transformations and whitespace modes. Excluded
 content does not contribute font size, weight or descendant padding. Backgrounds
-resolve from the nearest visible ancestor, and RTL start/end alignment respects
+resolve from the nearest visible ancestor. Excel ignores the alpha channel, so a
+translucent background is blended over the background beneath it, and translucent
+text and border colors over white. RTL start/end alignment respects
 the element's direction. Horizontal alignment follows the rendered text, including
 legacy align attributes on rows and inner blocks such as center or div align.
 A table used directly as root retains its background and borders.
@@ -220,6 +223,8 @@ Cell and enclosing-table borders follow their measured grid perimeters. Borders
 are not copied onto neighboring cells or padded inner cells. Perimeter styles are
 detached after merging so an edge segment does not spread through a shared merged
 style. Explicit cell borders take precedence over enclosing-table borders.
+Borders come from the computed style only, so a border hidden by a stylesheet rule,
+including an !important one, is not exported.
 
 Column dimensions follow the [Open XML Column width definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.column?view=openxml-3.0.1),
 using the workbook Normal font's Calibri 11 maximum digit width of 7px at 96 DPI.
@@ -234,6 +239,9 @@ hook, restored after success or failure. Explicit CSS cell fonts keep their own
 font records. Unsupported ExcelJS serialization rejects rather than producing a
 workbook with inconsistent dimensions. preserveRichText also reserves enough
 merged-row height for explicit multiline text, preventing clipped address lines.
+Excel rows cannot exceed 409pt, so a taller HTML row is split into equal rows that
+its cells merge across, and reserved multiline height never grows a row past 409pt.
+Rows added below the exported grid keep Excel's default height.
 
 Alignment-mode images use the merged cell's actual column and row grid for left,
 center and right positioning, without fixed pixel compensation. Inline and stacked
@@ -258,7 +266,8 @@ Meaningful content is written before blank layout regions. Blank regions that
 overlap content decorate only free grid cells and never merge across that content.
 Collision checks cover the entire merged range and compare source values, including
 rich text. If clustered boundaries still collide, the exporter rebuilds once using
-all measured edges and emits GRID_REFINED on success. A content collision that
+all measured edges and emits GRID_REFINED on success. The refined grid keeps its
+narrow columns at their measured width, so the sheet stays as wide as the HTML. A content collision that
 remains in that grid rejects the export; no conflicting value is silently dropped.
 Tiny or overlapping HTML regions may need a clearer table structure or a different
 edgeTolerancePx. Arbitrary CSS grid layouts, formula generation and pixel-identical

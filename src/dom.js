@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createDom(dependencies) {
-  const { CONFIG, debugLog, snapToPrecision, normalizeEdges } = dependencies;
+  const { CONFIG, debugLog, snapToPrecision, normalizeEdges, splitTallRows } = dependencies;
 	const normalizedBlacklistSelectors = (() => {
 		let cachedSelectors = null;
 		return () => {
@@ -331,7 +331,7 @@ export function createDom(dependencies) {
 
 		const gridEdges = preserveEdges ? edges => Array.from(edges).sort((a, b) => a - b) : normalizeEdges;
 		const columnEdges = gridEdges(colEdgeSet);
-		const rowEdges = gridEdges(rowEdgeSet);
+		const rowEdges = splitTallRows(gridEdges(rowEdgeSet));
 
 		return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
 	};

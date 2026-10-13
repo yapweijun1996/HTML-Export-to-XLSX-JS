@@ -72,6 +72,11 @@
 - Log failures of automatically bound buttons to the console. Wait at most once for
   an image that never loads, report image load errors as messages, and keep rasters
   within common browser canvas limits.
+- Split HTML rows taller than Excel's 409pt limit into merged rows and cap reserved
+  multiline height. Keep Excel's default height for rows below the grid, and warn
+  with ROW_SCALE_FLOOR when an explicit rowScale is below fontScale.
+- Blend translucent colors over their backdrop, read borders from the computed style
+  only, keep refined-grid columns at their measured width, and validate sheetName.
 - Record the code review findings and their status in KNOWN_ISSUES.md.
 
 ## 0.1.0 — Preview

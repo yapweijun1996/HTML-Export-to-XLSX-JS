@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createStyles(dependencies) {
-  const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, escapeRegExp, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
+  const { CONFIG, DEFAULT_EXCEL_PADDING_PX, FONT_SCALE, debugLog, getElementStyle, isFiniteNumber, measureAvgCharWidth, pxToPoint } = dependencies;
 	const COLOR_CANVAS_CTX = (function () {
 		if (typeof document === 'undefined') return null;
 		const canvas = document.createElement('canvas');
@@ -132,12 +132,14 @@ export function createStyles(dependencies) {
 		}
 	};
 
-	const colorToARGB = (value) => {
-		const key = value || '';
+	// Excel ignores the alpha byte of cell colors, so a translucent color is blended over its
+	// backdrop (an ARGB string, white by default) and written opaque.
+	const colorToARGB = (value, backdrop = 'FFFFFFFF') => {
+		const key = (value || '') + '|' + backdrop;
 		if (COLOR_CACHE.has(key)) {
 			return COLOR_CACHE.get(key);
 		}
-		const parsed = parseCssColor(key);
+		const parsed = parseCssColor(value || '');
 		if (!parsed) {
 			COLOR_CACHE.set(key, null);
 			return null;
@@ -147,7 +149,9 @@ export function createStyles(dependencies) {
 			COLOR_CACHE.set(key, null);
 			return null;
 		}
-		const parts = [alphaByte, parsed.r, parsed.g, parsed.b]
+		const alpha = Math.min(1, parsed.a);
+		const under = [2, 4, 6].map(index => parseInt(backdrop.slice(index, index + 2), 16));
+		const parts = [255, ...[parsed.r, parsed.g, parsed.b].map((channel, index) => channel * alpha + under[index] * (1 - alpha))]
 		.map((component) => toHexByte(component));
 		if (parts.some((component) => component === null)) {
 			COLOR_CACHE.set(key, null);
@@ -197,88 +201,9 @@ export function createStyles(dependencies) {
 		}
 	};
 
-	const BORDER_STYLE_KEYWORDS = new Set([
-		'none',
-		'hidden',
-		'dotted',
-		'dashed',
-		'solid',
-		'double',
-		'groove',
-		'ridge',
-		'inset',
-		'outset',
-		'dash-dot',
-		'dashdot',
-		'dot-dash',
-		'dash-dot-dot',
-		'dashdotdot',
-		'dot-dot-dash'
-	]);
-
-	const parseBorderShorthand = (value) => {
-		if (!value) return null;
-		const tokens = value
-		.split(/\s+/)
-		.map((token) => token.trim().replace(/!important$/i, ''))
-		.filter((token) => token && token.toLowerCase() !== '!important');
-		if (!tokens.length) return null;
-
-		let width = null;
-		let style = null;
-		const colorParts = [];
-
-		for (const token of tokens) {
-			if (width === null) {
-				const widthCandidate = parseFloat(token);
-				if (Number.isFinite(widthCandidate)) {
-					width = widthCandidate;
-					continue;
-				}
-			}
-
-			if (style === null) {
-				const lowerToken = token.toLowerCase();
-				if (BORDER_STYLE_KEYWORDS.has(lowerToken)) {
-					style = token;
-					continue;
-				}
-			}
-
-			colorParts.push(token);
-		}
-
-		return {
-			width,
-			style,
-			color: colorParts.length ? colorParts.join(' ') : null
-		};
-	};
-
-	const matchInlineStyleValue = (styleText, property) => {
-		if (!styleText || !property) return null;
-		const pattern = new RegExp(`(?:^|;)\\s*${escapeRegExp(property)}\\s*:\\s*([^;]+)`, 'i');
-		const match = pattern.exec(styleText);
-		if (!match) return null;
-		const raw = match[1]?.trim().replace(/;$/, '');
-		if (!raw) return null;
-		return raw.replace(/\s*!important\s*$/i, '').trim() || null;
-	};
-
-	const parseInlineBorderFromAttribute = (element, side) => {
-		if (!element || typeof element.getAttribute !== 'function') return null;
-		const styleAttr = element.getAttribute('style');
-		if (!styleAttr) return null;
-		if (side) {
-			const specific = matchInlineStyleValue(styleAttr, `border-${side}`);
-			if (specific) {
-				return parseBorderShorthand(specific);
-			}
-		}
-		const generic = matchInlineStyleValue(styleAttr, 'border');
-		return generic ? parseBorderShorthand(generic) : null;
-	};
-	const extractBorders = (cs, element) => {
+	// The computed style is authoritative: it already includes inline styles and drops
+	// borders that a stylesheet rule, including an !important one, hides.
+	const extractBorders = (cs) => {
 		const sides = ['top', 'right', 'bottom', 'left'];
 		const border = {};
 		for (const side of sides) {
@@ -291,60 +216,6 @@ export function createStyles(dependencies) {
 				style: excelStyle,
 				color: color ? { argb: color } : undefined
 			};
-		}
-
-		if (element && element.style) {
-			const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-			for (const side of sides) {
-				if (border[side]) continue;
-				const widthStr = element.style[`border${capitalize(side)}Width`];
-				const styleStr = element.style[`border${capitalize(side)}Style`];
-				const colorStr = element.style[`border${capitalize(side)}Color`];
-				const shorthand = element.style[`border${capitalize(side)}`];
-
-				let width = Number.parseFloat(widthStr);
-				width = Number.isFinite(width) ? width : null;
-				let styleValue = styleStr || '';
-				let colorValue = colorStr || '';
-
-				if ((width == null || width <= 0) || !styleValue || !colorValue) {
-					const parsed = parseBorderShorthand(shorthand);
-					if (parsed) {
-						if ((width == null || width <= 0) && Number.isFinite(parsed.width)) {
-							width = parsed.width;
-						}
-						if (!styleValue && parsed.style) {
-							styleValue = parsed.style;
-						}
-						if ((!colorValue || !colorValue.trim()) && parsed.color) {
-							colorValue = parsed.color;
-						}
-					}
-				}
-
-				if ((width == null || width <= 0) || !styleValue || !colorValue) {
-					const parsedAttr = parseInlineBorderFromAttribute(element, side);
-					if (parsedAttr) {
-						if ((width == null || width <= 0) && Number.isFinite(parsedAttr.width)) {
-							width = parsedAttr.width;
-						}
-						if (!styleValue && parsedAttr.style) {
-							styleValue = parsedAttr.style;
-						}
-						if ((!colorValue || !colorValue.trim()) && parsedAttr.color) {
-							colorValue = parsedAttr.color;
-						}
-					}
-				}
-
-				const excelStyle = widthToBorderStyle(width, styleValue);
-				if (!excelStyle) continue;
-				const color = colorToARGB(colorValue);
-				border[side] = {
-					style: excelStyle,
-					color: color ? { argb: color } : undefined
-				};
-			}
 		}
 
 		return Object.keys(border).length ? border : null;
@@ -435,8 +306,11 @@ export function createStyles(dependencies) {
 		if (!backgroundCaches.has(root)) backgroundCaches.set(root, new WeakMap());
 		const cache = backgroundCaches.get(root);
 		if (cache.has(element)) return cache.get(element);
-		let color = dependencies.isElementExcluded(element, root) ? null : colorToARGB(getElementStyle(element).backgroundColor);
-		if (!color && element !== root) color = extractBackground(element.parentElement, root);
+		const value = dependencies.isElementExcluded(element, root) ? '' : getElementStyle(element).backgroundColor;
+		const opaque = parseCssColor(value)?.a >= 1;
+		// A transparent or translucent layer shows the background beneath it, or white at the root.
+		const beneath = !opaque && element !== root ? extractBackground(element.parentElement, root) : null;
+		const color = colorToARGB(value, beneath || 'FFFFFFFF') || beneath;
 		cache.set(element, color);
 		return color;
 	};
@@ -726,5 +600,5 @@ export function createStyles(dependencies) {
 	};
 
 
-  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
 }

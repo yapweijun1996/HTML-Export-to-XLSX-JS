@@ -1,8 +1,7 @@
 # Known Issues
 
-Code review of `main` at `f7556fd`, performed 2026-10-13. Line references in the
-details of fixed issues describe the code before the fix. Open issues reference the
-current source.
+Code review of `main` at `f7556fd`, performed 2026-10-13. All 20 issues are now fixed
+or resolved. Line references in the details describe the code before each fix.
 
 Evidence levels:
 
@@ -27,19 +26,19 @@ regression test failed on the code before its fix.
 | BUG-05 | Medium | Images | Images outside a td/th are dropped without a warning | Verified | Fixed |
 | BUG-06 | Medium | Images | Alignment mode places images at the cell's top edge, over preceding text | Verified | Fixed |
 | BUG-07 | Medium | Images | An image that overflows its cell rejects the whole export in the default mode | Verified | Fixed |
-| BUG-08 | Low | Workbook | Rows below the exported grid are 0.75pt (1px) tall | Verified | Open |
-| BUG-09 | Medium | Styles | Semi-transparent colors are written with an alpha byte that Excel ignores | Verified (output) | Open |
+| BUG-08 | Low | Workbook | Rows below the exported grid are 0.75pt (1px) tall | Verified | Fixed |
+| BUG-09 | Medium | Styles | Semi-transparent colors are written with an alpha byte that Excel ignores | Verified (output) | Fixed |
 | BUG-10 | Low | API | Failures from generic `[data-xlsx-button]` buttons are silent | Verified | Fixed |
 | BUG-11 | Low | Images | Off-screen lazy images wait twice the timeout and are then dropped | Verified | Fixed |
 | BUG-12 | Low | Images | Image load errors are reported as Event objects | Verified | Fixed |
-| BUG-13 | Low | Workbook | Row heights are not capped at Excel's 409pt maximum | Code | Open |
-| BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Code | Open |
-| BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Code | Open |
-| BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Code | Open |
+| BUG-13 | Low | Workbook | Row heights are not capped at Excel's 409pt maximum | Verified | Fixed |
+| BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Verified | Fixed |
+| BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Verified | Fixed (documented and warned) |
+| BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Verified | Fixed |
 | BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code | Resolved by `70d781f` |
 | BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Resolved by `70d781f` |
 | BUG-19 | Low | Images | Raster canvases have no size cap | Verified | Fixed |
-| BUG-20 | Low | Config | sheetName is not validated | Code | Open |
+| BUG-20 | Low | Config | sheetName is not validated | Verified | Fixed |
 
 ## Details
 
@@ -142,6 +141,7 @@ regression test failed on the code before its fix.
   ([src/workbook.js](src/workbook.js) lines 291-297). Every grid row already receives an
   explicit height.
 - **Fix:** leave Excel's default row height (15pt) unchanged.
+- **Status:** fixed. The worksheet no longer sets a default row height.
 
 ### BUG-09 Semi-transparent colors are written with an alpha byte that Excel ignores
 
@@ -153,6 +153,9 @@ regression test failed on the code before its fix.
   lines 145-156).
 - **Fix:** composite the color over the resolved background (or white), and write `FF`
   as the alpha.
+- **Status:** fixed. Backgrounds blend over the background beneath them; text and border
+  colors blend over white. Every written color is opaque, so Excel's handling of alpha no
+  longer matters.
 
 ### BUG-10 Failures from generic buttons are silent
 
@@ -192,6 +195,8 @@ regression test failed on the code before its fix.
   cell taller than 545px produces a row above 409pt. How Excel treats such a row has not
   been tested, but content beyond 409pt cannot be shown.
 - **Fix:** split rows taller than 409pt into several rows inside the same merge.
+- **Status:** fixed. Tall row spans are split into equal rows of at most 408pt before
+  cells are placed, and reserved multiline height stops at 409pt per row.
 
 ### BUG-14 The GRID_REFINED retry widens the sheet
 
@@ -202,6 +207,8 @@ regression test failed on the code before its fix.
   wider than the HTML, and precise image positions drift.
 - **Fix:** do not apply the minimum width to columns created by the retry, or merge
   sub-pixel slivers before writing.
+- **Status:** fixed. A refined grid writes measured widths; the ordinary grid still
+  applies `minColumnWidthPx`.
 
 ### BUG-15 A rowScale smaller than fontScale has no effect
 
@@ -209,6 +216,9 @@ regression test failed on the code before its fix.
   ([src/workbook.js](src/workbook.js) lines 19-23). With the default fontScale of 0.9,
   `rowScale: 0.8` is ignored. The README describes rowScale as a row size scale.
 - **Fix:** document the floor, or use rowScale alone.
+- **Status:** fixed by documenting the floor. Using rowScale alone would clip text whenever
+  fontScale is larger, so the floor stays. An explicit rowScale below fontScale now warns
+  with `ROW_SCALE_FLOOR`.
 
 ### BUG-16 The inline-style border fallback revives borders hidden by `!important` rules
 
@@ -217,6 +227,8 @@ regression test failed on the code before its fix.
   rule `border: none !important` that hides an inline border is therefore ignored, and
   the export shows a border the browser does not draw.
 - **Fix:** trust the computed style, and remove the inline fallback.
+- **Status:** fixed. The fallback and its shorthand parsers were removed; the full
+  three-browser suite passes without them.
 
 ### BUG-17 Outer table borders overwrite inner cell borders on the same edge
 
@@ -252,14 +264,17 @@ regression test failed on the code before its fix.
   `replace is not a function`. Names that begin or end with an apostrophe, and the
   reserved name `History`, are also not handled.
 - **Fix:** validate the option in `resolveOptions`.
+- **Status:** fixed. A non-string name throws `TypeError`, the reserved name throws
+  `RangeError`, and edge apostrophes are removed with the other forbidden characters.
 
 ## Cleanup
 
 These helpers are exported but not called by production code:
 `interpolateCoordinate`, `buildWorksheetEdgeMaps` (and `pxToColumnWidthForImagePositioning`
 and `rowHeightToPixels`, which only it uses) and `resolveSize` in
-[src/layout-metrics.js](src/layout-metrics.js), and `clampOffset` in
-[src/images.js](src/images.js).
+[src/layout-metrics.js](src/layout-metrics.js), `clampOffset` in
+[src/images.js](src/images.js), and `escapeRegExp` in [src/values.js](src/values.js),
+whose last caller was the removed inline border fallback.
 
 ## Globe3 notes
 

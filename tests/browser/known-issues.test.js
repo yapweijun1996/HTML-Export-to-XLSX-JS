@@ -153,4 +153,50 @@ for (const mode of ['', 'min']) {
         expect(Math.abs(end.x - start.x - 4000)).toBeLessThanOrEqual(1);
         expect(Math.abs(end.y - start.y - 2000)).toBeLessThanOrEqual(1);
     });
+
+    test('a tall HTML row is split into merged rows within Excel\'s 409pt limit' + suffix, async ({ page }) => {
+        const { sheet, cells } = await exportHtml(page, mode, '<table style="width:300px"><tr><td style="height:1200px">TALL</td></tr></table>');
+        const heights = Array.from({ length: sheet.rowCount }, (_, index) => sheet.getRow(index + 1).height);
+        expect(Math.max(...heights)).toBeLessThanOrEqual(409);
+        expect(Math.abs(heights.reduce((sum, height) => sum + height, 0) - 900)).toBeLessThanOrEqual(1);
+        const tall = cells.find(cell => cell.value === 'TALL');
+        expect(sheet.model.merges.some(range => range.startsWith(tall.address + ':'))).toBe(true);
+    });
+
+    test('a rowScale below fontScale is reported because rows keep the font scale' + suffix, async ({ page }) => {
+        const html = '<table style="width:300px"><tr><td style="height:40px">ROW</td></tr></table>';
+        const floored = await exportHtml(page, mode, html, { rowScale: 0.5 });
+        expect(floored.warnings.map(warning => warning.code)).toEqual(['ROW_SCALE_FLOOR']);
+        expect(floored.sheet.getRow(1).height).toBe(27);
+        expect((await exportHtml(page, mode, html)).warnings).toEqual([]);
+    });
+
+    test('translucent fills and text are blended over the color beneath them' + suffix, async ({ page }) => {
+        const { cells } = await exportHtml(page, mode, `<table style="width:300px;background:#ff0000"><tr>
+            <td style="background:rgba(0,0,255,0.5)">MIX</td><td style="background:rgba(0,0,0,0.05)">ZEBRA</td>
+            <td style="color:rgba(0,0,0,0.5)">GRAY</td></tr></table>`);
+        const find = value => cells.find(cell => cell.value === value);
+        expect(find('MIX').fill.fgColor.argb).toBe('FF800080');
+        expect(find('ZEBRA').fill.fgColor.argb).toBe('FFF20000');
+        expect(find('GRAY').fill.fgColor.argb).toBe('FFFF0000');
+        expect(find('GRAY').font.color.argb).toBe('FF808080');
+    });
+
+    test('a refined grid keeps the sheet as wide as the HTML' + suffix, async ({ page }) => {
+        const result = await exportHtml(page, mode, `<table style="width:300px;table-layout:fixed"><colgroup>
+            <col style="width:1px"><col style="width:1px"><col style="width:298px"></colgroup>
+            <tr><td>A</td><td>B</td><td>C</td></tr></table>`);
+        expect(result.warnings.map(warning => warning.code)).toContain('GRID_REFINED');
+        const width = result.sheet.columns.reduce((sum, column) => sum + Math.floor((256 * column.width + 18) / 256 * 7), 0);
+        expect(Math.abs(width - 750)).toBeLessThanOrEqual(2);
+    });
+
+    test('borders hidden by an !important stylesheet rule stay hidden' + suffix, async ({ page }) => {
+        const { cells } = await exportHtml(page, mode, `<style>#export td.plain{border:none !important}</style>
+            <table style="width:300px"><tr><td class="plain" style="border:2px solid red">PLAIN</td>
+            <td style="border:2px solid red">BOXED</td></tr></table>`);
+        const border = value => cells.find(cell => cell.value === value).border || {};
+        expect(['top', 'bottom', 'left'].filter(side => border('PLAIN')[side])).toEqual([]);
+        expect(['top', 'bottom', 'right'].every(side => border('BOXED')[side])).toBe(true);
+    });
 }

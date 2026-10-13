@@ -93,6 +93,10 @@ const freezeDeep = object => {
 };
 freezeDeep(DEFAULT_CONFIG);
 
+// Excel sheet names have 1-31 characters, none of \ / * ? : [ ], and no leading or trailing apostrophe.
+export const sanitizeSheetName = name => String(name || '').replace(/[\\/*?:[\]]/g, '')
+    .replace(/^'+|'+$/g, '').slice(0, 31).replace(/'+$/, '') || 'Sheet1';
+
 export function resolveOptions(root, options = {}) {
     for (const key of Object.keys(options)) {
         if (!allowed.has(key)) throw new TypeError('Unknown export option: ' + key);
@@ -138,6 +142,9 @@ export function resolveOptions(root, options = {}) {
     for (const selector of [...config.BLACKLIST_SELECTORS, config.PAGE_BREAK_SELECTOR]) root.matches(selector);
     if (options.onWarning !== undefined && typeof options.onWarning !== 'function') throw new TypeError('onWarning must be a function');
     if (options.cellType !== undefined && typeof options.cellType !== 'function') throw new TypeError('cellType must be a function');
+    if (typeof config.SHEET_NAME !== 'string') throw new TypeError('sheetName must be a string');
+    config.SHEET_NAME = sanitizeSheetName(config.SHEET_NAME);
+    if (config.SHEET_NAME.toLowerCase() === 'history') throw new RangeError('sheetName History is reserved by Excel');
     config.BLACKLIST_SELECTORS = [...config.BLACKLIST_SELECTORS];
     const page = structuredClone(options.pageSetup || {});
     config.PAGE_SETUP = { ...DEFAULT_CONFIG.PAGE_SETUP, ...page,

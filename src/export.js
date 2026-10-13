@@ -1,6 +1,6 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 import { resolveOptions } from './config.js';
-import { detectCurrency, escapeRegExp, parseCellValue } from './values.js';
+import { detectCurrency, parseCellValue } from './values.js';
 import { createLayoutMetrics } from './layout-metrics.js';
 import { createStyles } from './styles.js';
 import { createDom } from './dom.js';
@@ -57,8 +57,12 @@ export async function exportXlsx(options = {}) {
         warnings.push(warning);
         options.onWarning?.(warning);
     };
+    // Rows never scale below fontScale, so their text is not clipped; say so when asked for less.
+    if (options.rowScale !== undefined && CONFIG.ROW_SCALE < CONFIG.FONT_SCALE) {
+        warnLog('rowScale is below fontScale; rows use fontScale so their text is not clipped', { code: 'ROW_SCALE_FLOOR' });
+    }
     const dependencies = {
-        CONFIG, ExcelJS, escapeRegExp, warnLog, errorLog: warnLog,
+        CONFIG, ExcelJS, warnLog, errorLog: warnLog,
         debugLog: (...args) => { if (CONFIG.DEBUG) console.debug('[html-to-xlsx]', ...args); },
         detectCurrency: raw => detectCurrency(raw, { currency, locale, currencyDisplay: options.currencyDisplay }),
         parseCellValue: (text, cell) => parseCellValue(text, cell, { currency, locale,

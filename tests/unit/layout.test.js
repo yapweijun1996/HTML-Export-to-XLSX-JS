@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { DEFAULT_CONFIG, resolveOptions } from '../../src/config.js';
+import { DEFAULT_CONFIG, resolveOptions, sanitizeSheetName } from '../../src/config.js';
 import { createLayoutMetrics } from '../../src/layout-metrics.js';
+import { createStyles } from '../../src/styles.js';
 import { createWorkbookWriter } from '../../src/workbook.js';
 import { mapWithConcurrency } from '../../src/images.js';
 
@@ -214,4 +215,64 @@ test('Normal style serialization is isolated and retains explicit CSS cell fonts
     await assert.rejects(writer.writeWorkbookToBuffer(book), /Synthetic write failure/);
     assert.equal(book.xlsx.addStyles, originalAddStyles);
     book.xlsx.writeBuffer = writeBuffer;
+});
+
+test('rows taller than Excel allows are split into equal rows and never grow past 409pt', async () => {
+    const metrics = dependencies();
+    // 1200px is 900pt; at most 408pt per row needs three rows.
+    assert.deepEqual(metrics.splitTallRows([0, 100, 1300]), [0, 100, 500, 900, 1300]);
+    assert.deepEqual(metrics.splitTallRows([0, 544, 600]), [0, 544, 600]);
+    const base = { CONFIG: { ...DEFAULT_CONFIG, PRESERVE_RICH_TEXT: true }, ExcelJS, debugLog() {}, errorLog() {}, warnLog() {}, mapWithConcurrency };
+    const writer = createWorkbookWriter({ ...base, ...createLayoutMetrics(base) });
+    const text = Array.from({ length: 80 }, (_, line) => 'Line ' + line).join('\n');
+    const cells = [{ value: text, rowStart: 0, rowEnd: 2, colStart: 0, colEnd: 1,
+        styles: { font: { size: 9 }, alignment: { wrapText: true } } }];
+    const sheet = writer.prepareWorksheet(writer.createWorkbook(),
+        { columnWidthsPx: [300], rowHeightsPx: [500, 500], cells, images: [], pageBreakRows: [] });
+    assert.deepEqual([1, 2].map(row => sheet.getRow(row).height), [409, 409]);
+});
+
+test('rows below the grid keep Excel\'s default height', async () => {
+    const writer = createWorkbookWriter(dependencies());
+    const book = writer.createWorkbook();
+    const sheet = writer.prepareWorksheet(book, { columnWidthsPx: [100], rowHeightsPx: [1, 20], cells: [], images: [], pageBreakRows: [] });
+    assert.equal(sheet.getRow(1).height, 0.75);
+    const xml = await (await JSZip.loadAsync(await writer.writeWorkbookToBuffer(book))).file('xl/worksheets/sheet1.xml').async('string');
+    const format = xml.match(/<sheetFormatPr[^>]*>/)[0];
+    assert.match(format, /defaultRowHeight="15"/);
+    assert.doesNotMatch(format, /customHeight/);
+});
+
+test('a refined grid keeps narrow columns at their measured width', () => {
+    const deps = dependencies();
+    const writer = createWorkbookWriter(deps);
+    const width = refinedGrid => {
+        const sheet = writer.prepareWorksheet(writer.createWorkbook(),
+            { columnWidthsPx: [1, 1, 298], rowHeightsPx: [20], cells: [], images: [], pageBreakRows: [], refinedGrid });
+        return sheet.columns.reduce((sum, column) => sum + deps.columnWidthToPixels(column.width), 0);
+    };
+    assert.equal(width(true), 300);
+    // The ordinary grid still applies minColumnWidthPx to narrow fragments.
+    assert.equal(width(false), 318);
+});
+
+test('translucent colors are blended over their backdrop because Excel ignores alpha', () => {
+    const metrics = dependencies();
+    const styles = createStyles({ ...metrics, getElementStyle: () => ({}) });
+    assert.equal(styles.colorToARGB('rgba(0, 0, 255, 0.5)', 'FFFF0000'), 'FF800080');
+    assert.equal(styles.colorToARGB('rgba(0, 0, 0, 0.5)'), 'FF808080');
+    assert.equal(styles.colorToARGB('#12345680'), 'FF8899AA');
+    assert.equal(styles.colorToARGB('rgb(18, 52, 86)'), 'FF123456');
+    assert.equal(styles.colorToARGB('rgba(0, 0, 0, 0)'), null);
+});
+
+test('sheet names are validated and sanitized for Excel', () => {
+    const root = { getAttribute: () => null, matches: () => false };
+    assert.throws(() => resolveOptions(root, { sheetName: 5 }), TypeError);
+    assert.throws(() => resolveOptions(root, { sheetName: 'history' }), /reserved/);
+    assert.equal(resolveOptions(root, { sheetName: "'Quote: 1/2'" }).config.SHEET_NAME, 'Quote 12');
+    assert.equal(resolveOptions(root, { sheetName: 'x'.repeat(40) }).config.SHEET_NAME.length, 31);
+    assert.equal(resolveOptions(root, {}).config.SHEET_NAME, 'PrintForm');
+    assert.equal(sanitizeSheetName("'''"), 'Sheet1');
+    assert.equal(sanitizeSheetName('a'.repeat(30) + "''x"), 'a'.repeat(30));
 });

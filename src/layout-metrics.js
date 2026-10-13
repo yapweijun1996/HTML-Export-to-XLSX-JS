@@ -91,10 +91,10 @@ export function createLayoutMetrics(dependencies) {
 		return Math.round(scaledPx * POINTS_PER_CSS_PX * 100) / 100;
 	};
 
-	const pxToColumnWidth = (px, scale = 1) => {
-		const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
+	const pxToColumnWidth = (px, scale = 1, minPx = CONFIG.MIN_COL_WIDTH_PX) => {
+		const targetPx = Math.max(minPx, px);
 		const effectiveScale = toPositiveNumber(scale) || 1;
-		const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
+		const scaledPx = Math.max(minPx, targetPx * effectiveScale);
 		// OOXML width includes padding and uses the workbook Normal font's maximum
 		// digit width (Calibri 11: 7px), not the HTML font's average character width.
 		const finalAdjustment = toPositiveNumber(CONFIG.COLUMN_WIDTH_SCALE) || 1.0;
@@ -230,8 +230,24 @@ export function createLayoutMetrics(dependencies) {
 		return clusters.map((cluster, index) => index === clusters.length - 1 ? cluster.last : cluster.first);
 	};
 
+	// Excel rows cannot exceed 409pt. A taller span becomes several equal rows, so a tall HTML
+	// cell is merged across them instead of being clipped. Rows use the larger of the row and
+	// font scales, and one point of headroom absorbs the whole-pixel height rounding.
+	const MAX_ROW_HEIGHT_PT = 409;
+	const splitTallRows = (edges) => {
+		const maxPx = (MAX_ROW_HEIGHT_PT - 1) / (POINTS_PER_CSS_PX * Math.max(ROW_SCALE, FONT_SCALE));
+		const result = [];
+		edges.forEach((edge, index) => {
+			const span = index ? edge - edges[index - 1] : 0;
+			const parts = Math.ceil(span / maxPx);
+			for (let part = 1; part < parts; part++) result.push(snapToPrecision(edges[index - 1] + span * part / parts));
+			result.push(edge);
+		});
+		return result;
+	};
+
 	const isFiniteNumber = (value) => (typeof Number.isFinite === 'function' ? Number.isFinite(value) : isFinite(value));
 
 
-  return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, isFiniteNumber };
+  return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, MAX_ROW_HEIGHT_PT, splitTallRows, isFiniteNumber };
 }

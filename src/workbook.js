@@ -1,11 +1,13 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
+import { sanitizeSheetName } from './config.js';
+
 export function createWorkbookWriter(dependencies) {
- const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
+ const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, MAX_ROW_HEIGHT_PT, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
 	const blankBorderExclusions = new WeakMap();
-	const applyColumnWidths = (worksheet, columnWidthsPx) => {
+	const applyColumnWidths = (worksheet, columnWidthsPx, minColumnWidthPx) => {
 		let totalPixels = 0, writtenPixels = 0;
 		worksheet.columns = columnWidthsPx.map(px => {
-			totalPixels += pxToColumnWidth(px, EXPORT_SCALE) * EXCEL_MAX_DIGIT_WIDTH;
+			totalPixels += pxToColumnWidth(px, EXPORT_SCALE, minColumnWidthPx) * EXCEL_MAX_DIGIT_WIDTH;
 			const pixels = Math.max(1, Math.round(totalPixels) - writtenPixels);
 			writtenPixels += pixels;
 			return { width: Math.floor(pixels / EXCEL_MAX_DIGIT_WIDTH * 256) / 256 };
@@ -252,7 +254,15 @@ export function createWorkbookWriter(dependencies) {
 			const minimum = lines * Math.ceil(fontSize * 4 / 3 / 0.75) * 0.75 + 0.75;
 			let height = 0;
 			for (let r = cell.rowStart + 1; r <= cell.rowEnd; r++) height += worksheet.getRow(r).height;
-			if (height < minimum) worksheet.getRow(cell.rowEnd).height += minimum - height;
+			// Grow the lowest rows first, never past Excel's maximum row height.
+			let missing = minimum - height;
+			for (let r = cell.rowEnd; r > cell.rowStart && missing > 0; r--) {
+				const row = worksheet.getRow(r);
+				const added = Math.min(missing, MAX_ROW_HEIGHT_PT - row.height);
+				if (added <= 0) continue;
+				row.height += added;
+				missing -= added;
+			}
 		}
 	};
 
@@ -288,16 +298,13 @@ export function createWorkbookWriter(dependencies) {
 	};
 
 	const prepareWorksheet = (workbook, layoutModel) => {
-		const defaultRowHeightPt = Math.max(
-		pxToPoint(CONFIG.MIN_ROW_HEIGHT_PX, ROW_SCALE),
-		pxToPoint(CONFIG.MIN_ROW_HEIGHT_PX, FONT_SCALE)
-		);
-		const worksheet = workbook.addWorksheet(sanitizeSheetName(CONFIG.SHEET_NAME), {
-			properties: { defaultRowHeight: defaultRowHeightPt }
-		});
+		// Every grid row receives an explicit height; rows a user adds below keep Excel's default.
+		const worksheet = workbook.addWorksheet(sanitizeSheetName(CONFIG.SHEET_NAME));
 		applyPageSetupOptions(worksheet);
 		debugLog('Applying column widths and row heights');
-		applyColumnWidths(worksheet, layoutModel.columnWidthsPx);
+		// A refined grid keeps every measured edge to separate content, so its narrow columns
+		// keep their measured width instead of the minimum fragment width.
+		applyColumnWidths(worksheet, layoutModel.columnWidthsPx, layoutModel.refinedGrid ? 0 : undefined);
 		applyRowHeights(worksheet, layoutModel.rowHeightsPx);
 		debugLog('Writing cell content');
 		writeCellsToSheet(worksheet, layoutModel);
@@ -390,8 +397,6 @@ export function createWorkbookWriter(dependencies) {
 			if (CONFIG.NORMAL_FONT) xlsx.addStyles = originalAddStyles;
 		}
 	};
-
-	const sanitizeSheetName = (name) => (name || 'Sheet1').replace(/[\\/*?:\[\]]/g, '').slice(0, 31) || 'Sheet1';
 
  return { applyColumnWidths, applyRowHeights, applyPageBreaks, writeCellsToSheet, applyDeferredBorders, applyPageSetupOptions, createWorkbook, prepareWorksheet, processAndPlaceImages, logWorkbookMediaSummary, writeWorkbookToBuffer, sanitizeSheetName };
 }
