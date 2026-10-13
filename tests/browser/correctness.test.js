@@ -81,9 +81,16 @@ for (const mode of ['', 'min']) {
             { imageWidthScale: 1 });
         const images = result.sheet.getImages();
         expect(images).toHaveLength(3);
-        expect(images.map(image => image.range.tl.col)).toEqual([
-            expect.closeTo(0, 4), expect.closeTo(1.2, 4), expect.closeTo(2.4, 4)
-        ]);
+        const positions = images.map(image => {
+            const anchor = image.range.tl;
+            let pixels = anchor.nativeColOff / 9525;
+            for (let c = 1; c <= anchor.nativeCol; c++) {
+                const width = result.sheet.getColumn(c).width;
+                pixels += Math.floor((256 * width + 18) / 256 * 7);
+            }
+            return pixels;
+        });
+        expect(positions).toEqual([expect.closeTo(0, 1), expect.closeTo(120, 1), expect.closeTo(240, 1)]);
         expect(result.warnings).toEqual([]);
     });
 }

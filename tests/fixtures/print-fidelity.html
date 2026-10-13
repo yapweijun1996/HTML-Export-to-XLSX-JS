@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Synthetic print fidelity</title>
+    <style>
+        @page { size: A4; margin: 0.4in 0.25in; }
+        @media print { button { display: none; } }
+        body { margin: 0; font: 12px Arial; }
+        #export { width: 750px; }
+        table { width: 750px; border-collapse: collapse; table-layout: fixed; }
+        td { padding: 0; font: 12px Arial; vertical-align: top; }
+        .money { text-align: right; }
+        .line td { border-top: 1px solid black; }
+        .pagebreak_bf { height: 0; font-size: 0; line-height: 0; page-break-before: always; }
+        .spacer { height: 400px; }
+    </style>
+</head>
+<body>
+<button class="html_to_excel_btn">Export XLSX</button>
+<div id="export" class="exp_to_excel_button_content" data-excel-currency="HKD"></div>
+<script src="/node_modules/exceljs/dist/exceljs.min.js"></script>
+<script>
+    const logo = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="430" height="80"><rect width="430" height="80" fill="white"/><rect width="430" height="2" fill="black"/><circle cx="35" cy="35" r="25" fill="purple"/><text x="75" y="32" font-family="Arial" font-size="24">TEST COMPANY</text><text x="75" y="57" font-family="Arial" font-size="12">Fictional quotation fixture</text></svg>');
+    const header = page => '<table><colgroup><col style="width:500px"><col style="width:250px"></colgroup><tr>' +
+        '<td><img class="logo" src="' + logo + '" width="430" height="80"></td><td><b style="font-size:18px">HEADER ' + page + '</b></td></tr></table>';
+    const contact = '<table><colgroup><col style="width:350px"><col style="width:400px"></colgroup><tr>' +
+        '<td><b>Customer Name</b><br>Flat 14 Industrial Centre<br>Address line two<span hidden>PRIVATE</span></td>' +
+        '<td>Our Ref: test001<br>Date: 09 OCT 2026</td></tr></table>';
+    const detail = '<table><colgroup><col style="width:9px"><col style="width:41px"><col style="width:490px"><col style="width:60px"><col style="width:150px"></colgroup>' +
+        '<tr><td></td><td>Item</td><td>Description</td><td>Qty</td><td class="money">Amount</td></tr>' +
+        '<tr><td></td><td>A1</td><td>Equipment / 測試設備</td><td data-excel-type="number">1</td><td class="money">$ 1,800.00</td></tr>' +
+        '<tr class="line"><td colspan="4" class="money">Sub - Total HKD:</td><td class="money">$ 1,800.00</td></tr></table>';
+    document.querySelector('#export').innerHTML = header('ONE') + contact + detail + '<div class="spacer"></div>' +
+        '<div class="pagebreak_bf"></div>' + header('TWO') + contact + detail + '<div style="height:100px"></div>' +
+        '<div class="pagebreak_bf"></div>' + header('THREE') + contact +
+        '<table><tr><td bgcolor="#e9e9e9" colspan="3" style="font-size:24px;text-align:center"><b>Summary</b></td></tr>' +
+        '<tr><td style="width:50px">Part A -</td><td>部分 A -</td><td class="money">$ 8,700.00</td></tr>' +
+        '<tr class="line"><td colspan="2">Contact <b>Test Person</b> (測試姓名) at 1234 5678<br><i>Second line</i></td><td>Accepted by</td></tr></table>';
+    const script = document.createElement('script');
+    script.src = new URLSearchParams(location.search).get('mode') === 'min'
+        ? '/dist/export_to_xlsx.min.js' : '/dist/export_to_xlsx.js';
+    document.body.appendChild(script);
+</script>
+</body>
+</html>

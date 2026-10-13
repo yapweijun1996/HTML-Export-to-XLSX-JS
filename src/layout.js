@@ -1,8 +1,8 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createLayout(dependencies) {
-  const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractBackground, getCellText, parseCellValue, isElementExcluded, snapToPrecision } = dependencies;
-	const buildLayoutModel = (root) => {
-		const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root);
+  const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
+	const buildLayoutModel = (root, preserveEdges = false) => {
+		const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root, preserveEdges);
 
 		const describeCell = (cell) => {
 			const rect = cell.getBoundingClientRect();
@@ -19,10 +19,10 @@ export function createLayout(dependencies) {
 			const top = snapToPrecision(rect.top + scrollY - rootTop);
 			const bottom = snapToPrecision(rect.bottom + scrollY - rootTop);
 
-			const colStartIndex = columnEdges.findIndex((edge) => Math.abs(edge - left) <= CONFIG.EDGE_TOLERANCE_PX);
-			const colEndIndex = columnEdges.findIndex((edge) => Math.abs(edge - right) <= CONFIG.EDGE_TOLERANCE_PX);
-			const rowStartIndex = rowEdges.findIndex((edge) => Math.abs(edge - top) <= CONFIG.EDGE_TOLERANCE_PX);
-			const rowEndIndex = rowEdges.findIndex((edge) => Math.abs(edge - bottom) <= CONFIG.EDGE_TOLERANCE_PX);
+			const colStartIndex = findEdgeIndex(columnEdges, left);
+			const colEndIndex = findEdgeIndex(columnEdges, right);
+			const rowStartIndex = findEdgeIndex(rowEdges, top);
+			const rowEndIndex = findEdgeIndex(rowEdges, bottom);
 
 			if (colStartIndex === -1 || colEndIndex === -1 || rowStartIndex === -1 || rowEndIndex === -1) {
 				dependencies.warnLog('A cell has unmatched grid edges', { code: 'GRID_EDGE_MISMATCH' });
@@ -44,12 +44,8 @@ export function createLayout(dependencies) {
 
 		const resolveEdgeIndex = (edges, value, fallbackIndex) => {
 			if (Array.isArray(edges) && edges.length >= 2 && Number.isFinite(value)) {
-				const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 0.5);
-				for (let i = 0; i < edges.length; i++) {
-					if (Math.abs(edges[i] - value) <= tolerance) {
-						return i;
-					}
-				}
+				const nearest = findEdgeIndex(edges, value);
+				if (nearest !== -1) return nearest;
 				for (let i = 1; i < edges.length; i++) {
 					if (value < edges[i]) {
 						return i - 1;
@@ -105,6 +101,7 @@ export function createLayout(dependencies) {
 			const cellModel = {
 				element: cell,
 				value: exportedValue,
+				richText: extractRichText(cell, exportedValue),
 				colStart: colStartIndex,
 				colEnd: Math.max(colStartIndex + 1, colEndIndex),
 				rowStart: rowStartIndex,
@@ -158,6 +155,7 @@ export function createLayout(dependencies) {
 				cells.push({
 					element: fragment.cell,
 					value: exportedValue,
+					richText: extractRichText(referenceElement, exportedValue),
 					colStart: colStartIndex,
 					colEnd: colEndIndex,
 					rowStart: rowStartIndex,
@@ -447,6 +445,7 @@ export function createLayout(dependencies) {
 
 		const collectPageBreakRows = () => {
 			if (!pageBreakMarkers.length) return [];
+			const scrollY = window.scrollY || window.pageYOffset || 0;
 			const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 1);
 			const totalRows = Math.max(0, rowEdges.length - 1);
 			const rows = new Set();

@@ -33,7 +33,8 @@ function positionEmu(marker, sheet) {
     for (const column of sheet.children.find(child => child.name === 'cols').children) {
         const { min, max, width } = column.attributes;
         const w = Number(width);
-        const pixels = Math.floor(w < 1 ? w * 12 : w * 7 + 5);
+        // OOXML Column.width conversion, including the Normal font's 7px digit width.
+        const pixels = Math.floor((256 * w + Math.floor(128 / 7)) / 256 * 7);
         for (let c = Number(min); c <= Number(max); c++) widths.set(c - 1, pixels * 9525);
     }
     const heights = new Map(sheet.children.find(child => child.name === 'sheetData').children

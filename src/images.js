@@ -16,30 +16,39 @@ export function createImages(dependencies) {
 	const getImageRange = (worksheet, tl, ext) => {
 		// ExcelJS 4.4 writes an invalid editAs on oneCellAnchor. A twoCellAnchor
 		// with editAs="oneCell" keeps the same move-with-cell, fixed-size behavior.
-		// Preserve ExcelJS's existing start marker; express the end in real EMUs,
-		// because its fractional coordinates use a different offset unit.
-		const endMarker = (coordinate, sizePx, isColumn) => {
-			let index = Math.floor(coordinate);
-			const cell = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
-			const startUnits = isColumn
-				? (cell.isCustomWidth ? Math.floor(cell.width * 10000) : 640000)
-				: (cell.height ? Math.floor(cell.height * 10000) : 180000);
-			let offset = Math.floor((coordinate - index) * startUnits) + Math.round(sizePx * 9525);
+		// Both markers use physical EMUs; ExcelJS fractional offsets otherwise use
+		// width/height * 10000, which is not the worksheet's physical cell size.
+		const spanEmu = (index, isColumn) => {
+			const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+			return isColumn
+				? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525
+				: Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+		};
+		const advance = (index, offset, isColumn) => {
 			const limit = isColumn ? 16383 : 1048575;
 			for (;;) {
-				const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
-				const span = isColumn
-					? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525
-					: Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+				const span = spanEmu(index, isColumn);
 				if (offset < span) return { index, offset };
 				if (index >= limit) throw new RangeError('Image extends beyond the worksheet boundary');
 				offset -= span;
 				index++;
 			}
 		};
-		const col = endMarker(tl.col, ext.width, true);
-		const row = endMarker(tl.row, ext.height, false);
-		return { tl, br: { nativeCol: col.index, nativeColOff: col.offset,
+		const start = (coordinate, isColumn) => {
+			const index = Math.floor(coordinate);
+			let offset = Math.round((coordinate - index) * spanEmu(index, isColumn));
+			// Excel prints a thin strip on the preceding page when a picture starts
+			// exactly on a manual break. A two-pixel inset keeps it on its own page.
+			if (!isColumn && offset < 2 * 9525 && worksheet.rowBreaks?.some(brk => brk.id === index)) {
+				offset = 2 * 9525;
+			}
+			return advance(index, offset, isColumn);
+		};
+		const fromCol = start(tl.col, true), fromRow = start(tl.row, false);
+		const col = advance(fromCol.index, fromCol.offset + Math.round(ext.width * 9525), true);
+		const row = advance(fromRow.index, fromRow.offset + Math.round(ext.height * 9525), false);
+		return { tl: { nativeCol: fromCol.index, nativeColOff: fromCol.offset,
+			nativeRow: fromRow.index, nativeRowOff: fromRow.offset }, br: { nativeCol: col.index, nativeColOff: col.offset,
 			nativeRow: row.index, nativeRowOff: row.offset }, editAs: 'oneCell' };
 	};
 	const ensureImageLoaded = (img) => {

@@ -16,8 +16,9 @@ function placement(alignment, count = 1) {
     const images = createImages(dependencies);
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Images');
-    worksheet.columns = [{ width: 7 }, { width: 14 }, { width: 14 }, { width: 14 }];
-    for (let row = 1; row <= 3; row++) worksheet.getRow(row).height = 37.5;
+    worksheet.columns = [50, 100, 100, 100].map(pixels => ({ width: pixels / 7 }));
+    worksheet.getRow(1).height = 15;
+    for (let row = 2; row <= 3; row++) worksheet.getRow(row).height = 37.5;
     const addImage = worksheet.addImage.bind(worksheet);
     worksheet.addImage = (id, range) => { ranges.push(range); addImage(id, range); };
     const cell = { colStart: 1, colEnd: 4, rowStart: 1, rowEnd: 3,
@@ -28,22 +29,27 @@ function placement(alignment, count = 1) {
     return ranges;
 }
 
+function position(marker) {
+    return { x: [0, 50, 150, 250, 350][marker.nativeCol] + marker.nativeColOff / 9525,
+        y: [0, 20, 70, 120][marker.nativeRow] + marker.nativeRowOff / 9525 };
+}
+
 test('aligned image anchors respect merged-cell geometry without fixed pixel offsets', () => {
-    for (const [alignment, col, row] of [['left', 1, 1], ['center', 2.2, 1.8], ['right', 3.4, 1]]) {
+    for (const [alignment, x, y] of [['left', 50, 20], ['center', 170, 60], ['right', 290, 20]]) {
         const [range] = placement(alignment);
-        assert.ok(Math.abs(range.tl.col - col) < 1e-9, alignment + ' column');
-        assert.ok(Math.abs(range.tl.row - row) < 1e-9, alignment + ' row');
+        assert.deepEqual(position(range.tl), { x, y }, alignment + ' position');
         assert.equal(range.editAs, 'oneCell');
-        assert.ok(range.br.nativeCol >= Math.floor(col));
-        assert.ok(range.br.nativeRow >= Math.floor(row));
+        const end = position(range.br);
+        assert.equal(end.x - x, 60);
+        assert.equal(end.y - y, 20);
     }
 });
 
 test('multiple aligned images keep their spacing rather than collapsing onto the right edge', () => {
     const inline = placement('inline', 2);
-    assert.equal(inline[0].tl.col, 1);
-    assert.ok(Math.abs(inline[1].tl.col - 1.64) < 1e-9);
+    assert.equal(position(inline[0].tl).x, 50);
+    assert.equal(position(inline[1].tl).x - position(inline[0].tl).x, 64);
     const stacked = placement('block', 2);
-    assert.equal(stacked[0].tl.row, 1);
-    assert.ok(Math.abs(stacked[1].tl.row - 1.48) < 1e-9);
+    assert.equal(position(stacked[0].tl).y, 20);
+    assert.equal(position(stacked[1].tl).y - position(stacked[0].tl).y, 24);
 });

@@ -59,8 +59,9 @@ export async function exportXlsx(options = {}) {
     const dependencies = {
         CONFIG, ExcelJS, escapeRegExp, warnLog, errorLog: warnLog,
         debugLog: (...args) => { if (CONFIG.DEBUG) console.debug('[html-to-xlsx]', ...args); },
-        detectCurrency: raw => detectCurrency(raw, { currency, locale }),
-        parseCellValue: (text, cell) => parseCellValue(text, cell, { currency, locale }),
+        detectCurrency: raw => detectCurrency(raw, { currency, locale, currencyDisplay: options.currencyDisplay }),
+        parseCellValue: (text, cell) => parseCellValue(text, cell, { currency, locale,
+            currencyDisplay: options.currencyDisplay, cellType: options.cellType }),
         mapWithConcurrency
     };
     Object.assign(dependencies, createLayoutMetrics(dependencies));
@@ -89,10 +90,20 @@ export async function exportXlsx(options = {}) {
                 code: 'IMAGE_PRELOAD_FAILED', source: image.currentSrc || image.src, error
             }); }
         });
-    const layoutModel = dependencies.buildLayoutModel(root);
+    let layoutModel = dependencies.buildLayoutModel(root);
     if (!layoutModel.cells.length && !layoutModel.images.length) throw new Error('No visible table cells to export');
-    const workbook = dependencies.createWorkbook();
-    const worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+    let workbook = dependencies.createWorkbook();
+    let worksheet;
+    try {
+        worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+    } catch (error) {
+        if (error?.code !== 'XLSX_CELL_OVERLAP') throw error;
+        // Retain every measured edge once before rejecting a genuine content collision.
+        layoutModel = dependencies.buildLayoutModel(root, true);
+        workbook = dependencies.createWorkbook();
+        worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+        warnLog('Preserved exact DOM boundaries to separate colliding grid regions', { code: 'GRID_REFINED' });
+    }
     await dependencies.processAndPlaceImages(workbook, worksheet, layoutModel);
     const buffer = await dependencies.writeWorkbookToBuffer(workbook);
     const filename = filenameFor(options.filename);

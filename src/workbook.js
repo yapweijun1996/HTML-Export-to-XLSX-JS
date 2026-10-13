@@ -1,16 +1,27 @@
 // MIT License. Copyright (c) 2026 YAP WEI JUN.
 export function createWorkbookWriter(dependencies) {
- const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
+ const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency } = dependencies;
 	const applyColumnWidths = (worksheet, columnWidthsPx) => {
-		worksheet.columns = columnWidthsPx.map((px) => ({ width: pxToColumnWidth(px, EXPORT_SCALE) }));
+		let totalPixels = 0, writtenPixels = 0;
+		worksheet.columns = columnWidthsPx.map(px => {
+			totalPixels += pxToColumnWidth(px, EXPORT_SCALE) * EXCEL_MAX_DIGIT_WIDTH;
+			const pixels = Math.max(1, Math.round(totalPixels) - writtenPixels);
+			writtenPixels += pixels;
+			return { width: Math.floor(pixels / EXCEL_MAX_DIGIT_WIDTH * 256) / 256 };
+		});
 	};
 
 	const applyRowHeights = (worksheet, rowHeightsPx) => {
+		let totalPoints = 0, writtenPoints = 0;
 		rowHeightsPx.forEach((px, idx) => {
 			const row = worksheet.getRow(idx + 1);
 			const heightByRowScale = pxToPoint(px, ROW_SCALE);
 			const heightByFontScale = pxToPoint(px, FONT_SCALE);
-			row.height = Math.max(heightByRowScale, heightByFontScale);
+			// Excel rounds row heights to whole screen pixels. Round cumulative edges
+			// so fragmented rows do not progressively move images and page boundaries.
+			totalPoints += Math.max(heightByRowScale, heightByFontScale);
+			row.height = Math.max(0.75, Math.round(totalPoints / 0.75) * 0.75 - writtenPoints);
+			writtenPoints += row.height;
 			row.alignment = row.alignment || { vertical: 'top' };
 		});
 	};
@@ -75,8 +86,12 @@ export function createWorkbookWriter(dependencies) {
 	};
 
 	const writeCellsToSheet = (worksheet, model) => {
-		const occupancy = new Set();
+		const occupancy = new Map();
+		const textFor = cell => String(cell.value ?? '').trim();
 		const sortedCells = model.cells.slice().sort((a, b) => {
+			// Blank layout regions must not reserve cells before meaningful content is written.
+			const contentOrder = Number(Boolean(textFor(b))) - Number(Boolean(textFor(a)));
+			if (contentOrder) return contentOrder;
 			if (a.rowStart !== b.rowStart) return a.rowStart - b.rowStart;
 			return a.colStart - b.colStart;
 		});
@@ -87,24 +102,62 @@ export function createWorkbookWriter(dependencies) {
 			const colStart = cell.colStart + 1;
 			const colEnd = cell.colEnd;
 
-			const key = `${rowStart},${colStart}`;
-			if (occupancy.has(key)) {
-                const existing = worksheet.getCell(rowStart, colStart).value;
-                const text = String(cell.value ?? '').trim();
-                if (text && text !== String(existing ?? '').trim()) {
-                    throw new Error('Overlapping non-empty cells at ' + key + '; adjust the HTML table structure or edgeTolerancePx');
-                }
-                continue;
-            }
-
 			const mergeRowEnd = Math.max(rowStart, rowEnd);
 			const mergeColEnd = Math.max(colStart, colEnd);
+			const text = textFor(cell);
+			let collision;
+			for (let r = rowStart; r <= mergeRowEnd && !collision; r++) {
+				for (let c = colStart; c <= mergeColEnd; c++) {
+					const existing = occupancy.get(`${r},${c}`);
+					if (existing) { collision = { existing, row: r, column: c }; break; }
+				}
+			}
+			if (collision && text) {
+				const existing = collision.existing;
+				const position = existing.sheetPosition;
+				// Compare source values, not ExcelJS's serialized rich-text objects.
+				if (text === textFor(existing) && position.rowStart === rowStart
+					&& position.rowEnd === mergeRowEnd && position.colStart === colStart
+					&& position.colEnd === mergeColEnd) {
+					cell.sheetPosition = { ...position };
+					continue;
+				}
+				const error = new Error('Overlapping non-empty cells at ' + collision.row + ','
+					+ collision.column + '; adjust the HTML table structure or edgeTolerancePx');
+				error.code = 'XLSX_CELL_OVERLAP';
+				error.conflicts = [existing, cell].map(region => ({
+					rowStart: region.rowStart + 1, rowEnd: region.rowEnd,
+					colStart: region.colStart + 1, colEnd: region.colEnd,
+					bounds: region.bounds,
+					tag: region.element?.tagName, id: region.element?.id || undefined,
+					valueType: typeof region.value, textLength: textFor(region).length
+				}));
+				throw error;
+			}
+			if (collision) {
+				// Keep blank-region decoration on free grid cells without merging across content.
+				for (let r = rowStart; r <= mergeRowEnd; r++) {
+					for (let c = colStart; c <= mergeColEnd; c++) {
+						if (occupancy.has(`${r},${c}`)) continue;
+						const target = worksheet.getCell(r, c);
+						if (cell.styles.fill) target.fill = cell.styles.fill;
+						const border = { ...target.border };
+						for (const [side, onEdge] of Object.entries({ top: r === rowStart,
+							bottom: r === mergeRowEnd, left: c === colStart, right: c === mergeColEnd })) {
+							if (onEdge && cell.styles.border?.[side]) border[side] = cell.styles.border[side];
+						}
+						target.border = border;
+					}
+				}
+				cell.sheetPosition = { rowStart, rowEnd: mergeRowEnd, colStart, colEnd: mergeColEnd };
+				continue;
+			}
 			if (mergeRowEnd > rowStart || mergeColEnd > colStart) {
 				worksheet.mergeCells(rowStart, colStart, mergeRowEnd, mergeColEnd);
 			}
 
 			const targetCell = worksheet.getCell(rowStart, colStart);
-			targetCell.value = cell.value;
+			targetCell.value = cell.richText ? { richText: cell.richText } : cell.value;
 			if (cell.styles.font) targetCell.font = cell.styles.font;
 			if (cell.styles.alignment) targetCell.alignment = cell.styles.alignment;
 			if (cell.styles.border) targetCell.border = cell.styles.border;
@@ -117,7 +170,7 @@ export function createWorkbookWriter(dependencies) {
 
 			for (let r = rowStart; r <= mergeRowEnd; r++) {
 				for (let c = colStart; c <= mergeColEnd; c++) {
-					occupancy.add(`${r},${c}`);
+					occupancy.set(`${r},${c}`, cell);
 				}
 			}
 
@@ -177,6 +230,22 @@ export function createWorkbookWriter(dependencies) {
 		}
 	};
 
+	const fitMultilineText = (worksheet, model) => {
+		if (!CONFIG.PRESERVE_RICH_TEXT) return;
+		for (const cell of model.cells) {
+			if (typeof cell.value !== 'string' || !cell.styles.alignment?.wrapText) continue;
+			const lines = cell.value.trim().split('\n').length;
+			if (lines < 2) continue;
+			const fontSize = cell.styles.font?.size || CONFIG.NORMAL_FONT?.size || 11;
+			// Native Excel Arial 9 AutoFit uses 12pt per line plus one pixel.
+			// Fixed merged rows do not AutoFit; reserve this height explicitly.
+			const minimum = lines * Math.ceil(fontSize * 4 / 3 / 0.75) * 0.75 + 0.75;
+			let height = 0;
+			for (let r = cell.rowStart + 1; r <= cell.rowEnd; r++) height += worksheet.getRow(r).height;
+			if (height < minimum) worksheet.getRow(cell.rowEnd).height += minimum - height;
+		}
+	};
+
 	const applyPageSetupOptions = (worksheet) => {
 		if (!CONFIG.PAGE_SETUP) return;
 		const { margins, ...pageSetupRest } = CONFIG.PAGE_SETUP;
@@ -222,8 +291,13 @@ export function createWorkbookWriter(dependencies) {
 		applyRowHeights(worksheet, layoutModel.rowHeightsPx);
 		debugLog('Writing cell content');
 		writeCellsToSheet(worksheet, layoutModel);
+		fitMultilineText(worksheet, layoutModel);
 		applyDeferredBorders(worksheet, layoutModel);
 		applyPageBreaks(worksheet, layoutModel);
+		if (!worksheet.pageSetup.printArea && layoutModel.columnWidthsPx.length && layoutModel.rowHeightsPx.length) {
+			worksheet.pageSetup.printArea = 'A1:' + worksheet.getColumn(layoutModel.columnWidthsPx.length).letter
+				+ layoutModel.rowHeightsPx.length;
+		}
 		fitMarkedPagesForPrint(worksheet);
 		return worksheet;
 	};
@@ -271,7 +345,29 @@ export function createWorkbookWriter(dependencies) {
 	};
 
 	const writeWorkbookToBuffer = async (workbook) => {
+		const xlsx = workbook.xlsx;
+		const originalAddStyles = xlsx.addStyles;
 		try {
+			if (CONFIG.NORMAL_FONT) {
+				// ExcelJS 4.4 has no public Normal-style setter. Limit this compatibility
+				// hook to one writer instance and preserve every explicit cell font.
+				if (typeof originalAddStyles !== 'function') throw new Error('ExcelJS Normal-style serialization is unsupported');
+				xlsx.addStyles = async (zip, model) => {
+					const styles = model.styles;
+					const fonts = styles?.model?.fonts;
+					if (!Array.isArray(fonts) || !fonts.length || typeof styles.map?.font?.toXml !== 'function') {
+						throw new Error('ExcelJS Normal-style serialization is unsupported');
+					}
+					// Desktop Excel resolves its built-in Normal style from font zero.
+					// Extracted CSS cell fonts have their own records, including explicit
+					// Calibri cells; changing a named-style XF alone is ignored by Excel.
+					fonts[0] = styles.map.font.toXml(CONFIG.NORMAL_FONT);
+					const xml = styles.xml;
+					const normal = /<cellStyle\b[^>]*\bname="Normal"[^>]*\/>/;
+					if (!normal.test(xml)) throw new Error('ExcelJS Normal-style definition is missing');
+					zip.append(xml.replace(normal, tag => tag.replace(/\/>$/, ' customBuiltin="1"/>')), { name: 'xl/styles.xml' });
+				};
+			}
 			logWorkbookMediaSummary(workbook);
 			debugLog('Writing workbook buffer');
 			const buffer = await workbook.xlsx.writeBuffer();
@@ -280,6 +376,8 @@ export function createWorkbookWriter(dependencies) {
 		} catch (err) {
 			errorLog('writeBuffer failed', { code: 'WORKBOOK_WRITE_FAILED', error: err });
 			throw err;
+		} finally {
+			if (CONFIG.NORMAL_FONT) xlsx.addStyles = originalAddStyles;
 		}
 	};
 

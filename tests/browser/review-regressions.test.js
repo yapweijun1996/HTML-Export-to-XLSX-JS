@@ -48,6 +48,16 @@ async function exported(page, options = {}) {
     return { ...result, workbook, sheet, cells };
 }
 
+function imagePosition(image, sheet) {
+    const marker = image.range.tl;
+    let x = marker.nativeColOff / 9525, y = marker.nativeRowOff / 9525;
+    for (let c = 1; c <= marker.nativeCol; c++) {
+        x += Math.floor((256 * sheet.getColumn(c).width + 18) / 256 * 7);
+    }
+    for (let r = 1; r <= marker.nativeRow; r++) y += sheet.getRow(r).height / 0.75;
+    return { x, y };
+}
+
 for (const mode of ['', 'min']) {
     const suffix = ' (' + (mode || 'source') + ')';
     test('disjoint text and nested declarations retain each value once' + suffix, async ({ page }) => {
@@ -118,7 +128,7 @@ for (const mode of ['', 'min']) {
             <tr><td>ZERO<img src="./stamp.svg" style="width:0;height:0"></td></tr></table>`);
         const result = await exported(page);
         expect(result.sheet.getImages()).toHaveLength(5);
-        const positions = result.sheet.getImages().slice(1).map(image => image.range.tl.col);
+        const positions = result.sheet.getImages().slice(1).map(image => imagePosition(image, result.sheet).x);
         expect(new Set(positions).size).toBe(4);
         expect(positions.every((position, index) => !index || position > positions[index - 1])).toBe(true);
         expect(result.warnings).toEqual([]);
@@ -129,9 +139,8 @@ for (const mode of ['', 'min']) {
             <tr><td style="height:100px" data-excel-image-align="left"><img src="./stamp.svg" width="20" height="20"></td></tr></table>`);
         const result = await exported(page, { imageAlignment: 'center' });
         const images = result.sheet.getImages();
-        expect(images[0].range.tl.col).toBeCloseTo(140 / 300, 4);
-        expect(images[0].range.tl.row).toBeCloseTo(0.4, 4);
-        expect(images[1].range.tl.col).toBe(0);
+        expect(imagePosition(images[0], result.sheet)).toEqual({ x: 140, y: 40 });
+        expect(imagePosition(images[1], result.sheet).x).toBe(0);
     });
 
     test('precise images map through unequal merged columns without fixed compensation' + suffix, async ({ page }) => {
@@ -146,9 +155,12 @@ for (const mode of ['', 'min']) {
         expect(original.top).toBeGreaterThan(0);
         expect(original.top).toBeLessThan(50);
         const result = await exported(page, { imagePlacement: 'precise' });
-        expect(result.sheet.getImages()[0].range.tl.col).toBeCloseTo(1.25, 4);
+        const image = result.sheet.getImages()[0];
+        const position = imagePosition(image, result.sheet);
+        expect(position.x).toBeCloseTo(original.left, 3);
         // Inline image baselines differ by browser; the DOM is the placement contract.
-        expect(result.sheet.getImages()[0].range.tl.row).toBeCloseTo(1 + original.top / 100, 4);
+        const previousHeight = result.sheet.getRow(1).height / 0.75;
+        expect(position.y - previousHeight).toBeCloseTo(original.top, 1);
     });
 
     test('localized signed amounts remain editable numbers in the workbook' + suffix, async ({ page }) => {

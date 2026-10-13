@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Add an optional cellType callback for legacy markup, with HTML type metadata
+  taking precedence. Classify safe numeric Globe3 item quantities by matching
+  their column boundaries to quantity headers without changing the source DOM.
+- Write meaningful content before blank regions, compare source values for rich
+  text and check entire merged ranges. Refine colliding grids once with every
+  measured edge, retaining rejection for unresolved content collisions.
+- Bound coordinate clusters from their first edge and select the nearest retained
+  edge for cells and text fragments, avoiding grid drift from close-edge chains.
+- Log Globe3 export exception messages before the compatibility alert.
+- Correct OOXML column-width conversion and cumulative grid rounding. Use physical
+  EMUs for both drawing markers and an explicit print area for the exported grid.
+- Add a Globe3 print profile retaining original text/image sizes and positions,
+  visible single-line labels, mixed inline fonts and the document currency code.
+  Keep numeric values editable and generic API configuration isolated.
+- Align the Globe3 print origin and margins and omit print background fills.
+  Inset pictures at manual page boundaries to prevent preceding-page residue.
+- Set the Globe3 workbook Normal style to Arial 9, preserving explicit CSS cell
+  fonts and avoiding unintended horizontal print pages. Reserve Excel line height
+  for explicit multiline text so merged address cells do not clip their last line.
+
 - Preserve uniform visible inline font families, colors, italics, underlines and
   strike-through decorations, including ancestor decorations and legacy font tags.
 - Keep visibly single-line bold or underlined captions on one line without changing

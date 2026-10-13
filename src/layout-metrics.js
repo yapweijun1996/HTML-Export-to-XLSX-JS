@@ -77,6 +77,13 @@ export function createLayoutMetrics(dependencies) {
 	const IMAGE_SCALE = resolveImageScale();
 
 	const DEFAULT_EXCEL_PADDING_PX = 5;
+	const EXCEL_MAX_DIGIT_WIDTH = (() => {
+		if (!CONFIG.NORMAL_FONT || typeof document === 'undefined') return 7;
+		const context = document.createElement('canvas').getContext('2d');
+		if (!context) return 7;
+		context.font = CONFIG.NORMAL_FONT.size + 'pt ' + JSON.stringify(CONFIG.NORMAL_FONT.name);
+		return Math.max(1, Math.round(Math.max(...Array.from('0123456789', digit => context.measureText(digit).width))));
+	})();
 
 	const pxToPoint = (px, scale = 1) => {
 		const effectiveScale = toPositiveNumber(scale) || 1;
@@ -88,16 +95,10 @@ export function createLayoutMetrics(dependencies) {
 		const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
 		const effectiveScale = toPositiveNumber(scale) || 1;
 		const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
-		const avgCharWidth = measureAvgCharWidth();
-		const excelPadding = DEFAULT_EXCEL_PADDING_PX; // A reasonable assumption for default cell padding.
-
-		// Base calculation using dynamic measurement
-		const characterCount = (scaledPx - excelPadding) / avgCharWidth;
-
-		// Apply the final manual adjustment factor
+		// OOXML width includes padding and uses the workbook Normal font's maximum
+		// digit width (Calibri 11: 7px), not the HTML font's average character width.
 		const finalAdjustment = toPositiveNumber(CONFIG.COLUMN_WIDTH_SCALE) || 1.0;
-
-		return Math.max(0, characterCount * finalAdjustment);
+		return Math.floor(scaledPx * finalAdjustment / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
 	};
 
 	const pxToColumnWidthForImagePositioning = (px, scale = 1) => {
@@ -107,18 +108,12 @@ export function createLayoutMetrics(dependencies) {
 		const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
 		const effectiveScale = toPositiveNumber(scale) || 1;
 		const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
-		const avgCharWidth = measureAvgCharWidth();
-		const excelPadding = DEFAULT_EXCEL_PADDING_PX;
-		const characterCount = (scaledPx - excelPadding) / avgCharWidth;
-		return Math.max(0, characterCount);
+		return Math.floor(scaledPx / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
 	};
 
 	const columnWidthToPixels = (widthChars) => {
 		if (!isFiniteNumber(widthChars) || widthChars <= 0) return 0;
-		if (widthChars < 1) {
-			return Math.floor(widthChars * 12);
-		}
-		return Math.floor(widthChars * 7 + 5);
+		return Math.floor((256 * widthChars + Math.floor(128 / EXCEL_MAX_DIGIT_WIDTH)) / 256 * EXCEL_MAX_DIGIT_WIDTH);
 	};
 
 	const rowHeightToPixels = (heightPoints) => {
@@ -199,29 +194,44 @@ export function createLayoutMetrics(dependencies) {
 		return 0;
 	};
 
+	const findEdgeIndex = (edges, value) => {
+		if (!edges.length || !Number.isFinite(value)) return -1;
+		let low = 0, high = edges.length;
+		while (low < high) {
+			const middle = Math.floor((low + high) / 2);
+			if (edges[middle] < value) low = middle + 1;
+			else high = middle;
+		}
+		const before = low - 1;
+		const nearest = low < edges.length && (before < 0
+			|| Math.abs(edges[low] - value) < Math.abs(edges[before] - value)) ? low : before;
+		return nearest >= 0 && Math.abs(edges[nearest] - value) <= CONFIG.EDGE_TOLERANCE_PX
+			? nearest : -1;
+	};
+
 	const normalizeEdges = (edges) => {
 		const sorted = Array.from(edges)
 		.map((value) => snapToPrecision(value))
 		.filter((value) => isFiniteNumber(value))
 		.sort((a, b) => a - b);
-		const result = [];
+		const clusters = [];
 		for (const value of sorted) {
-			if (!result.length) {
-				result.push(value);
-				continue;
-			}
-			const last = result[result.length - 1];
-			if (value - last >= CONFIG.EDGE_TOLERANCE_PX) {
-				result.push(value);
-			} else if (value > last) {
-				result[result.length - 1] = value;
+			// Bound each cluster by its first edge; moving that anchor can collapse a whole chain.
+			const current = clusters[clusters.length - 1];
+			if (!current || value - current.first >= CONFIG.EDGE_TOLERANCE_PX) {
+				clusters.push({ first: value, last: value });
+			} else {
+				current.last = value;
 			}
 		}
-		return result;
+		// Each edge keeps its cluster's first value, so neighbouring edges stay at least one
+		// tolerance apart and no sliver row appears. The final edge keeps its last value to
+		// preserve the full extent.
+		return clusters.map((cluster, index) => index === clusters.length - 1 ? cluster.last : cluster.first);
 	};
 
 	const isFiniteNumber = (value) => (typeof Number.isFinite === 'function' ? Number.isFinite(value) : isFinite(value));
 
 
-  return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, normalizeEdges, isFiniteNumber };
+  return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, isFiniteNumber };
 }

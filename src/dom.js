@@ -219,14 +219,17 @@ export function createDom(dependencies) {
 			visit(cell);
 			text = joinTextTokens(tokens);
 		}
-		const normalized = text.replace(/\u00a0/g, ' ').replace(/\t+/g, ' ');
+		// Leading and trailing line breaks (for example a closing <br>) only add spacing in HTML.
+		// Kept in the value they push centered text out of the Excel row and clip it.
+		const normalized = text.replace(/\u00a0/g, ' ').replace(/\t+/g, ' ')
+			.replace(/^(?:[ ]*\n)+|(?:\n[ ]*)+$/g, '');
 		const hasInlineFloat = descendants.some(child => !isElementExcluded(child, root)
 			&& child.style.cssFloat && child.style.cssFloat !== 'none');
 		return hasInlineFloat ? normalized.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim() : normalized;
 	};
 
 
-	const collectDomSnapshot = (root) => {
+	const collectDomSnapshot = (root, preserveEdges = false) => {
 		// The synchronous snapshot starts after font/image waits; preload visibility remains live.
 		snapshotExclusions = new WeakMap();
 		const rootRect = root.getBoundingClientRect();
@@ -326,8 +329,9 @@ export function createDom(dependencies) {
 			}
 		}
 
-		const columnEdges = normalizeEdges(colEdgeSet);
-		const rowEdges = normalizeEdges(rowEdgeSet);
+		const gridEdges = preserveEdges ? edges => Array.from(edges).sort((a, b) => a - b) : normalizeEdges;
+		const columnEdges = gridEdges(colEdgeSet);
+		const rowEdges = gridEdges(rowEdgeSet);
 
 		return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
 	};

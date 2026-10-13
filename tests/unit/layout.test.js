@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import { DEFAULT_CONFIG, resolveOptions } from '../../src/config.js';
 import { createLayoutMetrics } from '../../src/layout-metrics.js';
 import { createWorkbookWriter } from '../../src/workbook.js';
@@ -12,8 +13,59 @@ const dependencies = () => {
 };
 test('edge normalization retains ascending finite boundaries', () => {
     const metrics = dependencies();
-    assert.deepEqual(metrics.normalizeEdges([100, 0, 1, 50, NaN, 100]), [1, 50, 100]);
+    assert.deepEqual(metrics.normalizeEdges([100, 0, 1, 50, NaN, 100]), [0, 50, 100]);
     assert.equal(metrics.pxToPoint(96), 72);
+});
+test('edge normalization never leaves a row thinner than the edge tolerance', () => {
+    const metrics = dependencies();
+    const tolerance = DEFAULT_CONFIG.EDGE_TOLERANCE_PX;
+    // 10 and 11.9 are one cluster; 12 starts the next. Moving the first cluster to its last edge
+    // used to leave a 0.1px sliver between 11.9 and 12.
+    assert.deepEqual(metrics.normalizeEdges([0, 10, 11.9, 12, 40]), [0, 10, 12, 40]);
+    assert.deepEqual(metrics.normalizeEdges([0, 10, 11.5, 12.5, 40]), [0, 10, 12.5, 40]);
+    // Edge 0 is the container top and the last edge is the container extent; neither may drift.
+    assert.deepEqual(metrics.normalizeEdges([0, 1.5, 30, 31.5]), [0, 31.5]);
+    const edges = metrics.normalizeEdges([0, 3, 4.9, 5, 5.1, 7, 8.9, 9, 20, 21.9, 22]);
+    for (let index = 1; index < edges.length; index++) {
+        assert.ok(edges[index] - edges[index - 1] >= tolerance, 'sliver at ' + edges[index - 1] + '..' + edges[index]);
+    }
+});
+test('page break rows resolve without relying on an implicit scrollY global', async () => {
+    const { createLayout } = await import('../../src/layout.js');
+    const metrics = dependencies();
+    const marker = { getBoundingClientRect: () => ({ top: 100, bottom: 100 }) };
+    const layout = createLayout({
+        ...metrics,
+        collectDomSnapshot: () => ({
+            rootLeft: 0, rootTop: 50, rootWidth: 100, rootHeight: 300,
+            allCells: [], nestedCells: [], leafCells: [], tableElements: [], textFragments: [],
+            pageBreakMarkers: [marker], columnEdges: [0, 100], rowEdges: [0, 100, 200, 300]
+        })
+    });
+    const previous = globalThis.window;
+    globalThis.window = { scrollY: 50, scrollX: 0 };
+    try {
+        // Marker top is 100 + 50 scroll - 50 root top = 100, so the new page starts at row 2.
+        assert.deepEqual(layout.buildLayoutModel({ querySelectorAll: () => [] }).pageBreakRows, [2]);
+    } finally {
+        if (previous === undefined) delete globalThis.window; else globalThis.window = previous;
+    }
+});
+
+test('OOXML column widths retain physical pixels across narrow and wide columns', () => {
+    const base = { CONFIG: { ...DEFAULT_CONFIG, MIN_COL_WIDTH_PX: 1 }, debugLog() {}, errorLog() {} };
+    const metrics = createLayoutMetrics(base);
+    // Microsoft Open XML example: stored width 8.7109375 is 61 pixels.
+    assert.equal(metrics.columnWidthToPixels(8.7109375), 61);
+    for (const pixels of [1, 3, 5, 10, 12, 61, 100, 750]) {
+        assert.equal(metrics.columnWidthToPixels(metrics.pxToColumnWidth(pixels)), pixels);
+    }
+    const writer = createWorkbookWriter({ ...base, ...metrics, ExcelJS });
+    const sheet = new ExcelJS.Workbook().addWorksheet('Grid');
+    writer.applyColumnWidths(sheet, [10.2, 10.2, 10.2, 10.2, 10.2]);
+    assert.equal(sheet.columns.reduce((sum, column) => sum + metrics.columnWidthToPixels(column.width), 0), 51);
+    writer.applyRowHeights(sheet, [10.2, 10.2, 10.2, 10.2, 10.2]);
+    assert.equal([1, 2, 3, 4, 5].reduce((sum, row) => sum + sheet.getRow(row).height, 0), 38.25);
 });
 test('numeric subtotal cells survive real ExcelJS serialization', async () => {
     const writer = createWorkbookWriter(dependencies());
@@ -45,6 +97,16 @@ test('export configuration is isolated and rejects invalid numeric tuning', () =
     assert.throws(() => resolveOptions(root, { edgeTolerancePx: 0 }));
     assert.throws(() => resolveOptions(root, { imageConcurrency: 1.5 }));
     assert.throws(() => resolveOptions(root, { respectPageBreaks: 'true' }));
+    assert.throws(() => resolveOptions(root, { minColumnWidthPx: 0 }));
+    assert.throws(() => resolveOptions(root, { preserveRichText: 'true' }));
+    assert.throws(() => resolveOptions(root, { includeBackgrounds: 0 }));
+    assert.throws(() => resolveOptions(root, { currencyDisplay: 'symbol' }));
+    assert.throws(() => resolveOptions(root, { normalFont: { name: 'Arial', size: 0 } }));
+    const normalFont = { name: 'Arial', size: 9 };
+    const tuned = resolveOptions(root, { normalFont });
+    normalFont.size = 10;
+    assert.equal(tuned.config.NORMAL_FONT.size, 9);
+    assert.equal(second.config.NORMAL_FONT, null);
     assert.throws(() => resolveOptions(root, { unknown: true }));
     const exclude = ['.hidden'];
     resolveOptions(root, { exclude });
@@ -122,4 +184,34 @@ test('explicit scaling and the Fit To opt-out retain their print setup', () => {
         assert.equal(sheet.pageSetup.fitToPage, options.respectPageBreaks === false);
         if (options.pageSetup) assert.equal(sheet.pageSetup.scale, 65);
     }
+});
+
+test('Normal style serialization is isolated and retains explicit CSS cell fonts', async () => {
+    const base = { CONFIG: { ...DEFAULT_CONFIG, NORMAL_FONT: { name: 'Arial', size: 9 } },
+        ExcelJS, debugLog() {}, warnLog() {}, errorLog() {} };
+    const writer = createWorkbookWriter({ ...base, ...createLayoutMetrics(base) });
+    const book = writer.createWorkbook();
+    const sheet = book.addWorksheet('Fonts');
+    sheet.getCell('A1').value = 'Explicit Calibri';
+    sheet.getCell('A1').font = { name: 'Calibri', size: 11, color: { argb: 'FF000000' } };
+    const originalAddStyles = book.xlsx.addStyles;
+    for (let i = 0; i < 2; i++) {
+        const bytes = await writer.writeWorkbookToBuffer(book);
+        assert.equal(book.xlsx.addStyles, originalAddStyles);
+        const zip = await JSZip.loadAsync(bytes);
+        const styles = await zip.file('xl/styles.xml').async('string');
+        const normalFont = styles.match(/<fonts\b[^>]*>(<font>.*?<\/font>)/)[1];
+        assert.match(normalFont, /<name val="Arial"/);
+        assert.match(normalFont, /<sz val="9"/);
+        assert.match(styles, /<cellStyle\b[^>]*name="Normal"[^>]*customBuiltin="1"/);
+        const read = new ExcelJS.Workbook();
+        await read.xlsx.load(bytes);
+        assert.equal(read.worksheets[0].getCell('A1').font.name, 'Calibri');
+        assert.equal(read.worksheets[0].getCell('A1').font.size, 11);
+    }
+    const writeBuffer = book.xlsx.writeBuffer;
+    book.xlsx.writeBuffer = async () => { throw new Error('Synthetic write failure'); };
+    await assert.rejects(writer.writeWorkbookToBuffer(book), /Synthetic write failure/);
+    assert.equal(book.xlsx.addStyles, originalAddStyles);
+    book.xlsx.writeBuffer = writeBuffer;
 });

@@ -94,12 +94,17 @@ const explicitSymbols = [
     ['£', 'GBP'], ['₹', 'INR']
 ];
 
-export function currencyFormat(currency, locale = 'en-US') {
+export function currencyFormat(currency, locale = 'en-US', source = null) {
     const decimals = new Intl.NumberFormat(locale, {
         style: 'currency', currency
     }).resolvedOptions().maximumFractionDigits;
     const fraction = decimals ? '.' + '0'.repeat(decimals) : '';
-    return '"' + currency + '" #,##0' + fraction + ';("' + currency + '" #,##0' + fraction + ')';
+	const label = '"' + (source?.label || currency) + '"';
+	const space = source ? source.space : ' ';
+	const prefix = source?.suffix ? '' : label + space;
+	const suffix = source?.suffix ? space + label : '';
+	const number = prefix + '#,##0' + fraction + suffix;
+	return number + ';(' + number + ')';
 }
 
 export function detectCurrency(rawText, options = {}) {
@@ -112,9 +117,18 @@ export function detectCurrency(rawText, options = {}) {
     if (accounting && sign) return null;
     if (sign) text = text.slice(1).trim();
     let code = null;
+    let source = null;
     const takeSymbol = symbol => {
-        if (text.startsWith(symbol)) { text = text.slice(symbol.length).trim(); return true; }
-        if (text.endsWith(symbol)) { text = text.slice(0, -symbol.length).trim(); return true; }
+        if (text.startsWith(symbol)) {
+            const remainder = text.slice(symbol.length);
+            source = { label: symbol, space: /^\s/.test(remainder) ? ' ' : '', suffix: false };
+            text = remainder.trim(); return true;
+        }
+        if (text.endsWith(symbol)) {
+            const remainder = text.slice(0, -symbol.length);
+            source = { label: symbol, space: /\s$/.test(remainder) ? ' ' : '', suffix: true };
+            text = remainder.trim(); return true;
+        }
         return false;
     };
     // Aliases such as RMB must be resolved before ISO validation, longest first.
@@ -127,7 +141,7 @@ export function detectCurrency(rawText, options = {}) {
         const explicit = prefix || suffix;
         if (explicit) {
             try { code = validateCurrency(explicit[1]); } catch { return null; }
-            text = (prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length)).trim();
+            takeSymbol(explicit[1]);
         }
     }
     if (!code && options.currency) {
@@ -144,7 +158,8 @@ export function detectCurrency(rawText, options = {}) {
     if (!code) return null;
     if ((accounting || sign) && /^[+\-(]/.test(text)) return null;
     const value = parseLocalizedNumber(accounting ? '(' + text + ')' : sign + text, locale);
-    return value === null ? null : { value, numFmt: currencyFormat(code, options.locale) };
+    return value === null ? null : { value, numFmt: currencyFormat(code, options.locale,
+        options.currencyDisplay === 'source' ? source : null) };
 }
 
 export function parseCellValue(text, element, options = {}) {
@@ -157,7 +172,13 @@ export function parseCellValue(text, element, options = {}) {
         }
         return null;
     };
-    const type = attribute('data-excel-type');
+    let type = attribute('data-excel-type');
+    if (type === null && options.cellType) {
+        type = options.cellType(element, text);
+        if (type != null && !['text', 'number', 'currency'].includes(type)) {
+            throw new TypeError('cellType must return text, number, currency or undefined');
+        }
+    }
     const raw = attribute('data-excel-value') ?? text;
     const cellCurrency = attribute('data-excel-currency');
     const cellOptions = { ...options, currency: cellCurrency ? validateCurrency(cellCurrency) : options.currency };

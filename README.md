@@ -66,7 +66,9 @@ outcome. Loading the script after DOMContentLoaded is supported.
 |---|---|---|
 | root | first [data-xlsx-export] | Element or selector |
 | currency | container attribute, otherwise unset | ISO currency for ambiguous symbols |
+| currencyDisplay | code | code or source; source retains a detected symbol/code, spacing and position |
 | locale | container attribute, otherwise en-US | Input separators and localized digits |
+| cellType | unset | Callback (element, text) returning text, number, currency or undefined for cells without type metadata |
 | filename | document title plus timestamp | Optional .xlsx filename |
 | sheetName | PrintForm | Excel worksheet name |
 | download | true | Return bytes without downloading when false |
@@ -78,7 +80,12 @@ outcome. Loading the script after DOMContentLoaded is supported.
 | edgeTolerancePx | 2 | Coordinate clustering tolerance |
 | exportScale, rowScale | 1 | Export and row size scaling |
 | fontScale | 0.9 | Font size scaling |
+| normalFont | null | Optional { name, size } for the workbook Normal style and column metrics |
 | columnWidthScale | 1 | Column width adjustment |
+| minColumnWidthPx | 10 | Minimum width of a grid fragment |
+| preserveSingleLine | false | Keep all visibly single-line labels on one line with Shrink to Fit |
+| preserveRichText | false | Retain mixed visible inline font runs in string cells |
+| includeBackgrounds | true | Retain background fills; false matches browser printing without backgrounds |
 | imageScale, imageWidthScale | 3, 0.92 | Raster quality and placement size |
 | imagePlacement | alignment | alignment or precise |
 | imageAlignment | inline | inline, block, center, left, right, precise |
@@ -123,6 +130,11 @@ preserving phone numbers and identifiers. Strings beginning with = remain text
 and never become formulas. This library exports displayed amounts; it does not
 calculate quotation totals or discounts.
 
+For legacy HTML, cellType can explicitly declare a value's type without changing
+the DOM. Existing data-excel-type attributes take precedence. Returning undefined
+keeps the normal parsing behavior; numeric declarations retain the same locale and
+precision checks as typed HTML cells.
+
 For text alongside a nested table, metadata is resolved from the text's element
 up to its containing td/th, stopping before the parent table's cell. Formatting
 nodes belonging to one declared value are exported together, so an explicit
@@ -164,11 +176,29 @@ resolve from the nearest visible ancestor, and RTL start/end alignment respects
 the element's direction. A table used directly as root retains its background and borders.
 Uniform inline font families, colors and italics are read from visible text rather
 than only the outer cell. Underline and strike-through decorations include inline
-ancestors. Mixed inline properties retain the cell-level fallback; rich-text runs
-are not generated. Hidden content and nested child tables do not influence these
+ancestors. Mixed inline properties retain the cell-level fallback by default.
+With preserveRichText, mixed visible font runs retain the existing normalized
+text, line breaks, font sizes, colors and decorations. Numeric values stay numeric;
+metadata overrides or text transformations that cannot be matched stay plain.
+Hidden content and nested child tables do not influence these
 font properties. Bold or underlined captions that occupy one rendered line use
 Shrink to Fit within the original grid. Explicit line breaks and naturally wrapped
-captions retain text wrapping.
+captions retain text wrapping. preserveSingleLine extends this behavior to plain
+labels, including summary descriptions.
+
+Column dimensions follow the [Open XML Column width definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.column?view=openxml-3.0.1),
+using the workbook Normal font's Calibri 11 maximum digit width of 7px at 96 DPI.
+Column and row edges use cumulative whole-pixel rounding, avoiding drift across
+fragmented grids. Drawing start/end offsets use the same physical dimensions.
+Images starting on manual page boundaries have a small inset to prevent clipping
+residue on the preceding page. The default print area covers the exported grid;
+an explicit pageSetup.printArea takes precedence.
+With normalFont, the digit width is measured for that font. ExcelJS 4.4 does not
+expose a Normal-style setter, so the exporter uses a per-writer style serialization
+hook, restored after success or failure. Explicit CSS cell fonts keep their own
+font records. Unsupported ExcelJS serialization rejects rather than producing a
+workbook with inconsistent dimensions. preserveRichText also reserves enough
+merged-row height for explicit multiline text, preventing clipped address lines.
 
 Alignment-mode images use the merged cell's actual column and row grid for left,
 center and right positioning, without fixed pixel compensation. Inline and stacked
@@ -182,6 +212,15 @@ coordinates through all spanned columns and rows, without fixed pixel compensati
 
 The grid is reconstructed from visible table geometry. Meaningful cells colliding
 at an occupied position reject the export instead of silently dropping a value.
+Edge clusters are bounded from their first coordinate, preventing chains of close
+edges from collapsing beyond edgeTolerancePx. Cell and text-fragment coordinates
+select the nearest retained edge within that tolerance, including exact matches.
+Meaningful content is written before blank layout regions. Blank regions that
+overlap content decorate only free grid cells and never merge across that content.
+Collision checks cover the entire merged range and compare source values, including
+rich text. If clustered boundaries still collide, the exporter rebuilds once using
+all measured edges and emits GRID_REFINED on success. A content collision that
+remains in that grid rejects the export; no conflicting value is silently dropped.
 Tiny or overlapping HTML regions may need a clearer table structure or a different
 edgeTolerancePx. Arbitrary CSS grid layouts, formula generation and pixel-identical
 PDF printing are outside this preview's contract.
@@ -192,6 +231,13 @@ ERP-specific defaults belong to [adapters/globe3.js](adapters/globe3.js).
 The bundled adapter activates only when .exp_to_excel_button_content exists.
 It preserves .html_to_excel_btn and window.exportPrintFormToXlsx(), legacy
 exclusions and .pagebreak_bf_processed markers.
+Safe numeric values in legacy table.rowitem quantity cells become editable numbers
+when both cell edges match a preceding Qty/Quantity or 數量/数量 header in
+table.rowheader or table#rowheader. Other untyped values, including phone numbers
+and item identifiers, remain text. This classification does not modify the DOM.
+Bound-button failures log the exception message to the browser console before the
+compatibility alert. Unresolved collisions include source element IDs, ranges,
+geometry and value types, without logging document values or error stacks.
 It also recognizes zero-height .pagebreak_bf markers emitted by the current ERP
 paginator and explicit [data-xlsx-page-break] markers.
 
@@ -208,6 +254,20 @@ scale emit a warning and require explicit print settings or a smaller layout.
 Formatted numeric cells use Shrink to Fit instead of text wrapping, so expanded
 currency codes fit the original grid while values remain editable numbers.
 Text cells, merged regions, column widths and row heights retain their geometry.
+
+The Globe3 adapter uses a print profile: fontScale and imageWidthScale are 1,
+the workbook Normal style is Arial 9 to match the usual 12px printform text,
+imagePlacement is precise, minimum column fragments are 1px, and visible single
+lines and mixed inline fonts are preserved. Amounts use the document currency code
+(for example HKD) in their number format without changing numeric values. Background fills are omitted to match browser
+PDF printing with backgrounds disabled. Page content is left-aligned; margins
+are 0.25in left/right and 0.4in top/bottom. Generic API defaults remain unchanged.
+The original DOM and CFML paginator are not modified. Native Excel PDF output
+must still be reviewed for the actual form; browser and Excel font metrics differ.
+Excel's [automatic paper mapping](https://learn.microsoft.com/en-us/office/vba/api/excel.application.mappapersize)
+can additionally resize and reposition output even when the worksheet is A4.
+This application preference is outside the browser exporter's control; the
+exporter does not change Excel or printer preferences.
 
 For dollar-based forms without currency metadata, the adapter retains the legacy
 USD interpretation. HKD forms should declare their currency:

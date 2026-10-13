@@ -55,18 +55,18 @@ for (const mode of ['', 'min']) {
         expect(sheet.pageSetup.scale).toBeGreaterThanOrEqual(10);
         expect(sheet.pageSetup.scale).toBeLessThan(100);
         const widthPt = sheet.columns.reduce((sum, col) => sum +
-            (col.width < 1 ? Math.floor(col.width * 12) : Math.floor(col.width * 7 + 5)) * 0.75, 0);
-        expect(widthPt * sheet.pageSetup.scale / 100).toBeLessThanOrEqual((210 / 25.4 - 1) * 72);
+            Math.floor((256 * col.width + 18) / 256 * 7) * 0.75, 0);
+        expect(widthPt * sheet.pageSetup.scale / 100).toBeLessThanOrEqual((210 / 25.4 - 0.5) * 72);
         for (let i = 0; i < headers.length; i++) {
             let heightPt = 0;
             const end = headers[i + 1]?.row - 1 || sheet.rowCount;
             for (let r = headers[i].row; r <= end; r++) heightPt += sheet.getRow(r).height;
-            expect(heightPt * sheet.pageSetup.scale / 100).toBeLessThanOrEqual((297 / 25.4 - 0.2) * 72);
+            expect(heightPt * sheet.pageSetup.scale / 100).toBeLessThanOrEqual((297 / 25.4 - 0.8) * 72);
         }
         const amounts = cells.filter(c => typeof c.value === 'number');
         expect(amounts.map(c => c.value)).toEqual([1800, 3000, -3000]);
         for (const cell of amounts) {
-            expect(cell.numFmt).toContain('HKD');
+            expect(cell.numFmt).toContain('"HKD"');
             expect(cell.alignment.shrinkToFit).toBe(true);
             expect(cell.alignment.wrapText).not.toBe(true);
             expect(cell.isMerged).toBe(true);

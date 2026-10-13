@@ -42,6 +42,10 @@ export const DEFAULT_CONFIG = {
 		BLACKLIST_SELECTORS: ['[data-xlsx-ignore]'],
 		PAGE_BREAK_SELECTOR: '[data-xlsx-page-break]',
 		RESPECT_PAGE_BREAKS: true,
+		PRESERVE_SINGLE_LINE: false,
+		PRESERVE_RICH_TEXT: false,
+		INCLUDE_BACKGROUNDS: true,
+		NORMAL_FONT: null,
 		IMAGE_TIMEOUT_MS: 10000,
 		IMAGE_CONCURRENCY: 4,
 		PAGE_SETUP: {
@@ -73,10 +77,12 @@ const mappings = {
     imagePlacement: 'IMAGE_PLACEMENT_MODE', imageAlignment: 'IMAGE_ALIGNMENT',
     imageTimeoutMs: 'IMAGE_TIMEOUT_MS', imageConcurrency: 'IMAGE_CONCURRENCY',
     pageBreakSelector: 'PAGE_BREAK_SELECTOR', respectPageBreaks: 'RESPECT_PAGE_BREAKS', exclude: 'BLACKLIST_SELECTORS',
+    minColumnWidthPx: 'MIN_COL_WIDTH_PX', preserveSingleLine: 'PRESERVE_SINGLE_LINE',
+    preserveRichText: 'PRESERVE_RICH_TEXT', includeBackgrounds: 'INCLUDE_BACKGROUNDS',
     debug: 'DEBUG', sheetName: 'SHEET_NAME'
 };
 const allowed = new Set([...Object.keys(mappings), 'root', 'filename', 'currency', 'locale',
-    'exceljs', 'download', 'pageSetup', 'onWarning']);
+    'exceljs', 'download', 'pageSetup', 'onWarning', 'currencyDisplay', 'normalFont', 'cellType']);
 const freezeDeep = object => {
     for (const value of Object.values(object)) {
         if (value && typeof value === 'object') freezeDeep(value);
@@ -97,7 +103,7 @@ export function resolveOptions(root, options = {}) {
         if (options[key] !== undefined) config[internal] = options[key];
     }
     for (const [key, internal] of Object.entries(mappings)) {
-        if (key.endsWith('Scale') || key.endsWith('Ms') || key === 'imageConcurrency' || key === 'edgeTolerancePx') {
+        if (key.endsWith('Scale') || key.endsWith('Ms') || key === 'imageConcurrency' || key === 'edgeTolerancePx' || key === 'minColumnWidthPx') {
             if (!(Number.isFinite(config[internal]) && config[internal] > 0)) {
                 throw new RangeError(key + ' must be a positive finite number');
             }
@@ -105,6 +111,22 @@ export function resolveOptions(root, options = {}) {
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError('imageConcurrency must be an integer');
     if (typeof config.RESPECT_PAGE_BREAKS !== 'boolean') throw new TypeError('respectPageBreaks must be a boolean');
+    for (const key of ['preserveSingleLine', 'preserveRichText', 'includeBackgrounds']) {
+        if (typeof config[mappings[key]] !== 'boolean') throw new TypeError(key + ' must be a boolean');
+    }
+    if (options.currencyDisplay !== undefined && !['code', 'source'].includes(options.currencyDisplay)) {
+        throw new RangeError('currencyDisplay must be code or source');
+    }
+    if (options.normalFont !== undefined && options.normalFont !== null) {
+        const font = options.normalFont;
+        if (!font || typeof font !== 'object' || Array.isArray(font)
+            || Object.keys(font).some(key => !['name', 'size'].includes(key))
+            || typeof font.name !== 'string' || !font.name.trim()
+            || !Number.isFinite(font.size) || font.size < 1 || font.size > 409) {
+            throw new TypeError('normalFont requires a name and a size between 1 and 409 points');
+        }
+        config.NORMAL_FONT = { name: font.name.trim(), size: font.size };
+    }
     if (!['alignment', 'precise'].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError('Invalid imagePlacement');
     if (!['inline', 'block', 'center', 'left', 'right', 'precise'].includes(config.IMAGE_ALIGNMENT)) throw new RangeError('Invalid imageAlignment');
     config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== undefined;
@@ -113,6 +135,7 @@ export function resolveOptions(root, options = {}) {
     }
     for (const selector of [...config.BLACKLIST_SELECTORS, config.PAGE_BREAK_SELECTOR]) root.matches(selector);
     if (options.onWarning !== undefined && typeof options.onWarning !== 'function') throw new TypeError('onWarning must be a function');
+    if (options.cellType !== undefined && typeof options.cellType !== 'function') throw new TypeError('cellType must be a function');
     config.BLACKLIST_SELECTORS = [...config.BLACKLIST_SELECTORS];
     const page = structuredClone(options.pageSetup || {});
     config.PAGE_SETUP = { ...DEFAULT_CONFIG.PAGE_SETUP, ...page,

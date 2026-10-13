@@ -98,4 +98,12 @@ for (const mode of ['', 'min']) {
         expect(find('CHILD LABEL').font.underline).not.toBe(true);
         expect(cells.some(c => String(c.value).includes('PRIVATE'))).toBe(false);
     });
+
+    test('leading and trailing line breaks are layout spacing, not blank lines in the value (' + (mode || 'source') + ')', async ({ page }) => {
+        const { cells } = await exportHtml(page, mode, `
+            <table style="width:300px"><tr><td>Memo line<br><br><br></td></tr>
+                <tr><td><br>Lead and trail<br>Second<br></td></tr></table>`);
+        expect(cells.map(c => c.value)).toContain('Memo line');
+        expect(cells.map(c => c.value)).toContain('Lead and trail\nSecond');
+    });
 }

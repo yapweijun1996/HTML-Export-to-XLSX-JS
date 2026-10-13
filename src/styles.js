@@ -430,6 +430,7 @@ export function createStyles(dependencies) {
 
 	const backgroundCaches = new WeakMap();
 	const extractBackground = (element, root) => {
+		if (!CONFIG.INCLUDE_BACKGROUNDS) return null;
 		if (!element) return null;
 		if (!backgroundCaches.has(root)) backgroundCaches.set(root, new WeakMap());
 		const cache = backgroundCaches.get(root);
@@ -453,7 +454,7 @@ export function createStyles(dependencies) {
 		let excelFontSize;
 		if (sizePx > 0) {
 			const pointSize = pxToPoint(sizePx, FONT_SCALE);
-			excelFontSize = Math.max(8, Math.round(pointSize * 100) / 100);
+			excelFontSize = Math.max(CONFIG.PRESERVE_RICH_TEXT ? 1 : 8, Math.round(pointSize * 100) / 100);
 		}
 
 		const font = {
@@ -482,6 +483,45 @@ export function createStyles(dependencies) {
 
 		fontCache.set(cell, font);
 		return font;
+	};
+
+	const extractRichText = (cell, text) => {
+		if (!CONFIG.PRESERVE_RICH_TEXT || typeof text !== 'string' || !text.trim()) return null;
+		const characters = [];
+		const signatures = new Set();
+		for (const node of visibleTextNodes(cell)) {
+			const cs = getElementStyle(node.parentElement);
+			const decorations = textDecorations(node.parentElement);
+			const font = {
+				name: (cs.fontFamily || 'Arial').split(',')[0].trim().replace(/^['"]|['"]$/g, ''),
+				size: Math.max(1, pxToPoint(parseFloat(cs.fontSize) || 12, FONT_SCALE)),
+				bold: normalizeFontWeight(cs.fontWeight) >= 600,
+				italic: /^(italic|oblique)\b/.test(cs.fontStyle || '')
+			};
+			const color = colorToARGB(cs.color);
+			if (color) font.color = { argb: color };
+			if (decorations.underline) font.underline = true;
+			if (decorations.strike) font.strike = true;
+			const signature = JSON.stringify(font);
+			signatures.add(signature);
+			for (const char of node.textContent) {
+				if (!/\s/.test(char)) characters.push({ char, font, signature });
+			}
+		}
+		if (signatures.size < 2) return null;
+		// Retain the already-normalized visible text, including BRs and spacing.
+		// Metadata overrides or text transforms that cannot be matched stay plain.
+		if (characters.map(value => value.char).join('') !== text.replace(/\s/g, '')) return null;
+		const runs = [];
+		let index = 0, previous = null;
+		for (const char of text) {
+			const value = /\s/.test(char) ? previous || characters[index] : characters[index++];
+			if (!value) return null;
+			if (previous?.signature === value.signature) runs.at(-1).text += char;
+			else runs.push({ text: char, font: value.font });
+			previous = value;
+		}
+		return runs;
 	};
 
 	const parseCssPixelValue = (value) => {
@@ -644,7 +684,7 @@ export function createStyles(dependencies) {
 		const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || undefined;
 		const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || undefined;
 		const font = extractFont(cell, cs);
-		const singleLineCaption = (font.bold || font.underline) && isSingleLineText(cell, textValue);
+		const singleLineCaption = (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);
 		const wrapText = singleLineCaption ? false : cs.whiteSpace !== 'nowrap' || Boolean(textValue?.includes('\n'));
 
 		const alignment = {
@@ -677,5 +717,5 @@ export function createStyles(dependencies) {
 	};
 
 
-  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+  return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
 }

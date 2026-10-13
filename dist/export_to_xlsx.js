@@ -87,13 +87,18 @@
     ["\xA3", "GBP"],
     ["\u20B9", "INR"]
   ];
-  function currencyFormat(currency, locale = "en-US") {
+  function currencyFormat(currency, locale = "en-US", source = null) {
     const decimals = new Intl.NumberFormat(locale, {
       style: "currency",
       currency
     }).resolvedOptions().maximumFractionDigits;
     const fraction = decimals ? "." + "0".repeat(decimals) : "";
-    return '"' + currency + '" #,##0' + fraction + ';("' + currency + '" #,##0' + fraction + ")";
+    const label = '"' + (source?.label || currency) + '"';
+    const space = source ? source.space : " ";
+    const prefix = source?.suffix ? "" : label + space;
+    const suffix = source?.suffix ? space + label : "";
+    const number = prefix + "#,##0" + fraction + suffix;
+    return number + ";(" + number + ")";
   }
   function detectCurrency(rawText, options = {}) {
     const locale = options.locale || "en-US";
@@ -105,13 +110,18 @@
     if (accounting && sign) return null;
     if (sign) text = text.slice(1).trim();
     let code = null;
+    let source = null;
     const takeSymbol = (symbol) => {
       if (text.startsWith(symbol)) {
-        text = text.slice(symbol.length).trim();
+        const remainder = text.slice(symbol.length);
+        source = { label: symbol, space: /^\s/.test(remainder) ? " " : "", suffix: false };
+        text = remainder.trim();
         return true;
       }
       if (text.endsWith(symbol)) {
-        text = text.slice(0, -symbol.length).trim();
+        const remainder = text.slice(0, -symbol.length);
+        source = { label: symbol, space: /\s$/.test(remainder) ? " " : "", suffix: true };
+        text = remainder.trim();
         return true;
       }
       return false;
@@ -132,7 +142,7 @@
         } catch {
           return null;
         }
-        text = (prefix ? text.slice(prefix[0].length) : text.slice(0, -suffix[0].length)).trim();
+        takeSymbol(explicit[1]);
       }
     }
     if (!code && options.currency) {
@@ -150,7 +160,11 @@
     if (!code) return null;
     if ((accounting || sign) && /^[+\-(]/.test(text)) return null;
     const value = parseLocalizedNumber(accounting ? "(" + text + ")" : sign + text, locale);
-    return value === null ? null : { value, numFmt: currencyFormat(code, options.locale) };
+    return value === null ? null : { value, numFmt: currencyFormat(
+      code,
+      options.locale,
+      options.currencyDisplay === "source" ? source : null
+    ) };
   }
   function parseCellValue(text, element, options = {}) {
     const attribute = (name) => {
@@ -161,7 +175,13 @@
       }
       return null;
     };
-    const type = attribute("data-excel-type");
+    let type = attribute("data-excel-type");
+    if (type === null && options.cellType) {
+      type = options.cellType(element, text);
+      if (type != null && !["text", "number", "currency"].includes(type)) {
+        throw new TypeError("cellType must return text, number, currency or undefined");
+      }
+    }
     const raw = attribute("data-excel-value") ?? text;
     const cellCurrency = attribute("data-excel-currency");
     const cellOptions = { ...options, currency: cellCurrency ? validateCurrency(cellCurrency) : options.currency };
@@ -221,6 +241,10 @@
     BLACKLIST_SELECTORS: ["[data-xlsx-ignore]"],
     PAGE_BREAK_SELECTOR: "[data-xlsx-page-break]",
     RESPECT_PAGE_BREAKS: true,
+    PRESERVE_SINGLE_LINE: false,
+    PRESERVE_RICH_TEXT: false,
+    INCLUDE_BACKGROUNDS: true,
+    NORMAL_FONT: null,
     IMAGE_TIMEOUT_MS: 1e4,
     IMAGE_CONCURRENCY: 4,
     PAGE_SETUP: {
@@ -272,6 +296,10 @@
     pageBreakSelector: "PAGE_BREAK_SELECTOR",
     respectPageBreaks: "RESPECT_PAGE_BREAKS",
     exclude: "BLACKLIST_SELECTORS",
+    minColumnWidthPx: "MIN_COL_WIDTH_PX",
+    preserveSingleLine: "PRESERVE_SINGLE_LINE",
+    preserveRichText: "PRESERVE_RICH_TEXT",
+    includeBackgrounds: "INCLUDE_BACKGROUNDS",
     debug: "DEBUG",
     sheetName: "SHEET_NAME"
   };
@@ -284,7 +312,10 @@
     "exceljs",
     "download",
     "pageSetup",
-    "onWarning"
+    "onWarning",
+    "currencyDisplay",
+    "normalFont",
+    "cellType"
   ]);
   var freezeDeep = (object) => {
     for (const value of Object.values(object)) {
@@ -305,7 +336,7 @@
       if (options[key] !== void 0) config[internal] = options[key];
     }
     for (const [key, internal] of Object.entries(mappings)) {
-      if (key.endsWith("Scale") || key.endsWith("Ms") || key === "imageConcurrency" || key === "edgeTolerancePx") {
+      if (key.endsWith("Scale") || key.endsWith("Ms") || key === "imageConcurrency" || key === "edgeTolerancePx" || key === "minColumnWidthPx") {
         if (!(Number.isFinite(config[internal]) && config[internal] > 0)) {
           throw new RangeError(key + " must be a positive finite number");
         }
@@ -313,6 +344,19 @@
     }
     if (!Number.isInteger(config.IMAGE_CONCURRENCY)) throw new RangeError("imageConcurrency must be an integer");
     if (typeof config.RESPECT_PAGE_BREAKS !== "boolean") throw new TypeError("respectPageBreaks must be a boolean");
+    for (const key of ["preserveSingleLine", "preserveRichText", "includeBackgrounds"]) {
+      if (typeof config[mappings[key]] !== "boolean") throw new TypeError(key + " must be a boolean");
+    }
+    if (options.currencyDisplay !== void 0 && !["code", "source"].includes(options.currencyDisplay)) {
+      throw new RangeError("currencyDisplay must be code or source");
+    }
+    if (options.normalFont !== void 0 && options.normalFont !== null) {
+      const font = options.normalFont;
+      if (!font || typeof font !== "object" || Array.isArray(font) || Object.keys(font).some((key) => !["name", "size"].includes(key)) || typeof font.name !== "string" || !font.name.trim() || !Number.isFinite(font.size) || font.size < 1 || font.size > 409) {
+        throw new TypeError("normalFont requires a name and a size between 1 and 409 points");
+      }
+      config.NORMAL_FONT = { name: font.name.trim(), size: font.size };
+    }
     if (!["alignment", "precise"].includes(config.IMAGE_PLACEMENT_MODE)) throw new RangeError("Invalid imagePlacement");
     if (!["inline", "block", "center", "left", "right", "precise"].includes(config.IMAGE_ALIGNMENT)) throw new RangeError("Invalid imageAlignment");
     config.IMAGE_ALIGNMENT_EXPLICIT = options.imageAlignment !== void 0;
@@ -321,6 +365,7 @@
     }
     for (const selector of [...config.BLACKLIST_SELECTORS, config.PAGE_BREAK_SELECTOR]) root.matches(selector);
     if (options.onWarning !== void 0 && typeof options.onWarning !== "function") throw new TypeError("onWarning must be a function");
+    if (options.cellType !== void 0 && typeof options.cellType !== "function") throw new TypeError("cellType must be a function");
     config.BLACKLIST_SELECTORS = [...config.BLACKLIST_SELECTORS];
     const page = structuredClone(options.pageSetup || {});
     config.PAGE_SETUP = {
@@ -403,6 +448,13 @@
     };
     const IMAGE_SCALE = resolveImageScale();
     const DEFAULT_EXCEL_PADDING_PX = 5;
+    const EXCEL_MAX_DIGIT_WIDTH = (() => {
+      if (!CONFIG.NORMAL_FONT || typeof document === "undefined") return 7;
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) return 7;
+      context.font = CONFIG.NORMAL_FONT.size + "pt " + JSON.stringify(CONFIG.NORMAL_FONT.name);
+      return Math.max(1, Math.round(Math.max(...Array.from("0123456789", (digit) => context.measureText(digit).width))));
+    })();
     const pxToPoint = (px, scale = 1) => {
       const effectiveScale = toPositiveNumber(scale) || 1;
       const scaledPx = Math.max(0, px) * effectiveScale;
@@ -412,27 +464,18 @@
       const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
       const effectiveScale = toPositiveNumber(scale) || 1;
       const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
-      const avgCharWidth = measureAvgCharWidth();
-      const excelPadding = DEFAULT_EXCEL_PADDING_PX;
-      const characterCount = (scaledPx - excelPadding) / avgCharWidth;
       const finalAdjustment = toPositiveNumber(CONFIG.COLUMN_WIDTH_SCALE) || 1;
-      return Math.max(0, characterCount * finalAdjustment);
+      return Math.floor(scaledPx * finalAdjustment / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
     };
     const pxToColumnWidthForImagePositioning = (px, scale = 1) => {
       const targetPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, px);
       const effectiveScale = toPositiveNumber(scale) || 1;
       const scaledPx = Math.max(CONFIG.MIN_COL_WIDTH_PX, targetPx * effectiveScale);
-      const avgCharWidth = measureAvgCharWidth();
-      const excelPadding = DEFAULT_EXCEL_PADDING_PX;
-      const characterCount = (scaledPx - excelPadding) / avgCharWidth;
-      return Math.max(0, characterCount);
+      return Math.floor(scaledPx / EXCEL_MAX_DIGIT_WIDTH * 256) / 256;
     };
     const columnWidthToPixels = (widthChars) => {
       if (!isFiniteNumber(widthChars) || widthChars <= 0) return 0;
-      if (widthChars < 1) {
-        return Math.floor(widthChars * 12);
-      }
-      return Math.floor(widthChars * 7 + 5);
+      return Math.floor((256 * widthChars + Math.floor(128 / EXCEL_MAX_DIGIT_WIDTH)) / 256 * EXCEL_MAX_DIGIT_WIDTH);
     };
     const rowHeightToPixels = (heightPoints) => {
       if (!isFiniteNumber(heightPoints) || heightPoints <= 0) return 0;
@@ -502,25 +545,33 @@
       }
       return 0;
     };
+    const findEdgeIndex = (edges, value) => {
+      if (!edges.length || !Number.isFinite(value)) return -1;
+      let low = 0, high = edges.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (edges[middle] < value) low = middle + 1;
+        else high = middle;
+      }
+      const before = low - 1;
+      const nearest = low < edges.length && (before < 0 || Math.abs(edges[low] - value) < Math.abs(edges[before] - value)) ? low : before;
+      return nearest >= 0 && Math.abs(edges[nearest] - value) <= CONFIG.EDGE_TOLERANCE_PX ? nearest : -1;
+    };
     const normalizeEdges = (edges) => {
       const sorted = Array.from(edges).map((value) => snapToPrecision(value)).filter((value) => isFiniteNumber(value)).sort((a, b) => a - b);
-      const result = [];
+      const clusters = [];
       for (const value of sorted) {
-        if (!result.length) {
-          result.push(value);
-          continue;
-        }
-        const last = result[result.length - 1];
-        if (value - last >= CONFIG.EDGE_TOLERANCE_PX) {
-          result.push(value);
-        } else if (value > last) {
-          result[result.length - 1] = value;
+        const current = clusters[clusters.length - 1];
+        if (!current || value - current.first >= CONFIG.EDGE_TOLERANCE_PX) {
+          clusters.push({ first: value, last: value });
+        } else {
+          current.last = value;
         }
       }
-      return result;
+      return clusters.map((cluster, index) => index === clusters.length - 1 ? cluster.last : cluster.first);
     };
     const isFiniteNumber = (value) => typeof Number.isFinite === "function" ? Number.isFinite(value) : isFinite(value);
-    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, normalizeEdges, isFiniteNumber };
+    return { POINTS_PER_CSS_PX, toPositiveNumber, resolveExportScale, EXPORT_SCALE, resolveFontScale, FONT_SCALE, measureAvgCharWidth, resolveRowScale, ROW_SCALE, resolveImageScale, IMAGE_SCALE, DEFAULT_EXCEL_PADDING_PX, EXCEL_MAX_DIGIT_WIDTH, pxToPoint, pxToColumnWidth, pxToColumnWidthForImagePositioning, columnWidthToPixels, rowHeightToPixels, interpolateCoordinate, buildWorksheetEdgeMaps, SNAP_PRECISION, snapToPrecision, resolveSize, findEdgeIndex, normalizeEdges, isFiniteNumber };
   }
 
   // src/styles.js
@@ -913,6 +964,7 @@
     };
     const backgroundCaches = /* @__PURE__ */ new WeakMap();
     const extractBackground = (element, root) => {
+      if (!CONFIG.INCLUDE_BACKGROUNDS) return null;
       if (!element) return null;
       if (!backgroundCaches.has(root)) backgroundCaches.set(root, /* @__PURE__ */ new WeakMap());
       const cache = backgroundCaches.get(root);
@@ -933,7 +985,7 @@
       let excelFontSize;
       if (sizePx > 0) {
         const pointSize = pxToPoint(sizePx, FONT_SCALE);
-        excelFontSize = Math.max(8, Math.round(pointSize * 100) / 100);
+        excelFontSize = Math.max(CONFIG.PRESERVE_RICH_TEXT ? 1 : 8, Math.round(pointSize * 100) / 100);
       }
       const font = {
         name,
@@ -958,6 +1010,42 @@
       }
       fontCache.set(cell, font);
       return font;
+    };
+    const extractRichText = (cell, text) => {
+      if (!CONFIG.PRESERVE_RICH_TEXT || typeof text !== "string" || !text.trim()) return null;
+      const characters = [];
+      const signatures = /* @__PURE__ */ new Set();
+      for (const node of visibleTextNodes(cell)) {
+        const cs = getElementStyle(node.parentElement);
+        const decorations = textDecorations(node.parentElement);
+        const font = {
+          name: (cs.fontFamily || "Arial").split(",")[0].trim().replace(/^['"]|['"]$/g, ""),
+          size: Math.max(1, pxToPoint(parseFloat(cs.fontSize) || 12, FONT_SCALE)),
+          bold: normalizeFontWeight(cs.fontWeight) >= 600,
+          italic: /^(italic|oblique)\b/.test(cs.fontStyle || "")
+        };
+        const color = colorToARGB(cs.color);
+        if (color) font.color = { argb: color };
+        if (decorations.underline) font.underline = true;
+        if (decorations.strike) font.strike = true;
+        const signature = JSON.stringify(font);
+        signatures.add(signature);
+        for (const char of node.textContent) {
+          if (!/\s/.test(char)) characters.push({ char, font, signature });
+        }
+      }
+      if (signatures.size < 2) return null;
+      if (characters.map((value) => value.char).join("") !== text.replace(/\s/g, "")) return null;
+      const runs = [];
+      let index = 0, previous = null;
+      for (const char of text) {
+        const value = /\s/.test(char) ? previous || characters[index] : characters[index++];
+        if (!value) return null;
+        if (previous?.signature === value.signature) runs.at(-1).text += char;
+        else runs.push({ text: char, font: value.font });
+        previous = value;
+      }
+      return runs;
     };
     const parseCssPixelValue = (value) => {
       if (value === null || value === void 0) return 0;
@@ -1084,7 +1172,7 @@
       const horizontal = horizontalMap[cssHorizontal] || horizontalMap[attrHorizontal] || void 0;
       const vertical = verticalMap[cssVertical] || verticalMap[attrVertical] || void 0;
       const font = extractFont(cell, cs);
-      const singleLineCaption = (font.bold || font.underline) && isSingleLineText(cell, textValue);
+      const singleLineCaption = (CONFIG.PRESERVE_SINGLE_LINE || font.bold || font.underline) && isSingleLineText(cell, textValue);
       const wrapText = singleLineCaption ? false : cs.whiteSpace !== "nowrap" || Boolean(textValue?.includes("\n"));
       const alignment = {
         horizontal,
@@ -1109,7 +1197,7 @@
       }
       return alignment;
     };
-    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
+    return { COLOR_CANVAS_CTX, clampToByte, toHexByte, parseHexColor, parseAlphaValue, parseRgbFunction, COLOR_CACHE, parseCssColor, colorToARGB, widthToBorderStyle, BORDER_STYLE_KEYWORDS, parseBorderShorthand, matchInlineStyleValue, parseInlineBorderFromAttribute, extractBorders, normalizeFontWeight, isCellUniformlyBold, resolveFontSizePx, extractFont, extractRichText, extractBackground, parseCssPixelValue, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, convertPaddingPxToIndent, extractAlignment };
   }
 
   // src/dom.js
@@ -1232,7 +1320,7 @@
     };
     const collectTextFragmentsForCell = (cell, metrics, root) => {
       if (!cell || isElementBlacklisted(cell, root)) return [];
-      const { rootLeft = 0, rootTop = 0, scrollX = 0, scrollY: scrollY2 = 0 } = metrics || {};
+      const { rootLeft = 0, rootTop = 0, scrollX = 0, scrollY = 0 } = metrics || {};
       const fragments = [];
       let active = null;
       const visit = (node, owner) => {
@@ -1267,8 +1355,8 @@
         const bounds = {
           left: snapToPrecision(rect.left + scrollX - rootLeft),
           right: snapToPrecision(rect.right + scrollX - rootLeft),
-          top: snapToPrecision(rect.top + scrollY2 - rootTop),
-          bottom: snapToPrecision(rect.bottom + scrollY2 - rootTop)
+          top: snapToPrecision(rect.top + scrollY - rootTop),
+          bottom: snapToPrecision(rect.bottom + scrollY - rootTop)
         };
         if (owner && active?.sourceElement === owner) {
           active.left = Math.min(active.left, bounds.left);
@@ -1324,17 +1412,17 @@
         visit(cell);
         text = joinTextTokens(tokens);
       }
-      const normalized = text.replace(/\u00a0/g, " ").replace(/\t+/g, " ");
+      const normalized = text.replace(/\u00a0/g, " ").replace(/\t+/g, " ").replace(/^(?:[ ]*\n)+|(?:\n[ ]*)+$/g, "");
       const hasInlineFloat = descendants.some((child) => !isElementExcluded(child, root) && child.style.cssFloat && child.style.cssFloat !== "none");
       return hasInlineFloat ? normalized.replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim() : normalized;
     };
-    const collectDomSnapshot = (root) => {
+    const collectDomSnapshot = (root, preserveEdges = false) => {
       snapshotExclusions = /* @__PURE__ */ new WeakMap();
       const rootRect = root.getBoundingClientRect();
-      const scrollY2 = window.scrollY || window.pageYOffset || 0;
+      const scrollY = window.scrollY || window.pageYOffset || 0;
       const scrollX = window.scrollX || window.pageXOffset || 0;
       const rootLeft = snapToPrecision(rootRect.left + scrollX);
-      const rootTop = snapToPrecision(rootRect.top + scrollY2);
+      const rootTop = snapToPrecision(rootRect.top + scrollY);
       const rootWidth = snapToPrecision(root.scrollWidth);
       const rootHeight = snapToPrecision(root.scrollHeight);
       const allCells = Array.from(root.querySelectorAll("td, th")).filter(
@@ -1358,7 +1446,7 @@
       );
       const colEdgeSet = /* @__PURE__ */ new Set([0, rootWidth]);
       const rowEdgeSet = /* @__PURE__ */ new Set([0, rootHeight]);
-      const fragmentMetrics = { rootLeft, rootTop, scrollX, scrollY: scrollY2 };
+      const fragmentMetrics = { rootLeft, rootTop, scrollX, scrollY };
       for (const cell of allCells) {
         const rect = cell.getBoundingClientRect();
         const width = snapToPrecision(rect.width);
@@ -1366,8 +1454,8 @@
         if (width <= 0 || height <= 0) continue;
         const left = snapToPrecision(rect.left + scrollX - rootLeft);
         const right = snapToPrecision(rect.right + scrollX - rootLeft);
-        const top = snapToPrecision(rect.top + scrollY2 - rootTop);
-        const bottom = snapToPrecision(rect.bottom + scrollY2 - rootTop);
+        const top = snapToPrecision(rect.top + scrollY - rootTop);
+        const bottom = snapToPrecision(rect.bottom + scrollY - rootTop);
         colEdgeSet.add(left);
         colEdgeSet.add(right);
         rowEdgeSet.add(top);
@@ -1381,8 +1469,8 @@
         if (width <= 0 || height <= 0) continue;
         const left = snapToPrecision(rect.left + scrollX - rootLeft);
         const right = snapToPrecision(rect.right + scrollX - rootLeft);
-        const top = snapToPrecision(rect.top + scrollY2 - rootTop);
-        const bottom = snapToPrecision(rect.bottom + scrollY2 - rootTop);
+        const top = snapToPrecision(rect.top + scrollY - rootTop);
+        const bottom = snapToPrecision(rect.bottom + scrollY - rootTop);
         colEdgeSet.add(left);
         colEdgeSet.add(right);
         rowEdgeSet.add(top);
@@ -1411,8 +1499,8 @@
       for (const marker of pageBreakMarkers) {
         if (!marker || typeof marker.getBoundingClientRect !== "function") continue;
         const rect = marker.getBoundingClientRect();
-        const top = snapToPrecision(rect.top + scrollY2 - rootTop);
-        const bottom = snapToPrecision(rect.bottom + scrollY2 - rootTop);
+        const top = snapToPrecision(rect.top + scrollY - rootTop);
+        const bottom = snapToPrecision(rect.bottom + scrollY - rootTop);
         if (Number.isFinite(top)) {
           rowEdgeSet.add(Math.max(0, top));
         }
@@ -1420,8 +1508,9 @@
           rowEdgeSet.add(Math.max(0, bottom));
         }
       }
-      const columnEdges = normalizeEdges(colEdgeSet);
-      const rowEdges = normalizeEdges(rowEdgeSet);
+      const gridEdges = preserveEdges ? (edges) => Array.from(edges).sort((a, b) => a - b) : normalizeEdges;
+      const columnEdges = gridEdges(colEdgeSet);
+      const rowEdges = gridEdges(rowEdgeSet);
       return { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges };
     };
     return { normalizedBlacklistSelectors, loggedBlacklistedElements, elementMatchesSelector, isElementBlacklisted, isElementExcluded, getElementStyle: computedStyle, collectTextFragmentsForCell, getCellText, collectDomSnapshot };
@@ -1429,26 +1518,26 @@
 
   // src/layout.js
   function createLayout(dependencies) {
-    const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractBackground, getCellText, parseCellValue: parseCellValue2, isElementExcluded, snapToPrecision } = dependencies;
-    const buildLayoutModel = (root) => {
-      const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root);
+    const { CONFIG, collectDomSnapshot, computeEffectiveHorizontalPadding, computeEffectiveVerticalPadding, debugLog, extractAlignment, extractBorders, extractFont, extractRichText, extractBackground, getCellText, parseCellValue: parseCellValue2, isElementExcluded, snapToPrecision, findEdgeIndex } = dependencies;
+    const buildLayoutModel = (root, preserveEdges = false) => {
+      const { rootLeft, rootTop, rootWidth, rootHeight, allCells, nestedCells, leafCells, tableElements, textFragments, pageBreakMarkers, columnEdges, rowEdges } = collectDomSnapshot(root, preserveEdges);
       const describeCell = (cell) => {
         const rect = cell.getBoundingClientRect();
-        const scrollY2 = window.scrollY || window.pageYOffset || 0;
+        const scrollY = window.scrollY || window.pageYOffset || 0;
         const scrollX = window.scrollX || window.pageXOffset || 0;
         const rootLeft2 = snapToPrecision(root.getBoundingClientRect().left + scrollX);
-        const rootTop2 = snapToPrecision(root.getBoundingClientRect().top + scrollY2);
+        const rootTop2 = snapToPrecision(root.getBoundingClientRect().top + scrollY);
         const width = snapToPrecision(rect.width);
         const height = snapToPrecision(rect.height);
         if (width <= 0 || height <= 0) return null;
         const left = snapToPrecision(rect.left + scrollX - rootLeft2);
         const right = snapToPrecision(rect.right + scrollX - rootLeft2);
-        const top = snapToPrecision(rect.top + scrollY2 - rootTop2);
-        const bottom = snapToPrecision(rect.bottom + scrollY2 - rootTop2);
-        const colStartIndex = columnEdges.findIndex((edge) => Math.abs(edge - left) <= CONFIG.EDGE_TOLERANCE_PX);
-        const colEndIndex = columnEdges.findIndex((edge) => Math.abs(edge - right) <= CONFIG.EDGE_TOLERANCE_PX);
-        const rowStartIndex = rowEdges.findIndex((edge) => Math.abs(edge - top) <= CONFIG.EDGE_TOLERANCE_PX);
-        const rowEndIndex = rowEdges.findIndex((edge) => Math.abs(edge - bottom) <= CONFIG.EDGE_TOLERANCE_PX);
+        const top = snapToPrecision(rect.top + scrollY - rootTop2);
+        const bottom = snapToPrecision(rect.bottom + scrollY - rootTop2);
+        const colStartIndex = findEdgeIndex(columnEdges, left);
+        const colEndIndex = findEdgeIndex(columnEdges, right);
+        const rowStartIndex = findEdgeIndex(rowEdges, top);
+        const rowEndIndex = findEdgeIndex(rowEdges, bottom);
         if (colStartIndex === -1 || colEndIndex === -1 || rowStartIndex === -1 || rowEndIndex === -1) {
           dependencies.warnLog("A cell has unmatched grid edges", { code: "GRID_EDGE_MISMATCH" });
           return null;
@@ -1467,12 +1556,8 @@
       };
       const resolveEdgeIndex = (edges, value, fallbackIndex) => {
         if (Array.isArray(edges) && edges.length >= 2 && Number.isFinite(value)) {
-          const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 0.5);
-          for (let i = 0; i < edges.length; i++) {
-            if (Math.abs(edges[i] - value) <= tolerance) {
-              return i;
-            }
-          }
+          const nearest = findEdgeIndex(edges, value);
+          if (nearest !== -1) return nearest;
           for (let i = 1; i < edges.length; i++) {
             if (value < edges[i]) {
               return i - 1;
@@ -1522,6 +1607,7 @@
         const cellModel = {
           element: cell,
           value: exportedValue,
+          richText: extractRichText(cell, exportedValue),
           colStart: colStartIndex,
           colEnd: Math.max(colStartIndex + 1, colEndIndex),
           rowStart: rowStartIndex,
@@ -1568,6 +1654,7 @@
           cells.push({
             element: fragment.cell,
             value: exportedValue,
+            richText: extractRichText(referenceElement, exportedValue),
             colStart: colStartIndex,
             colEnd: colEndIndex,
             rowStart: rowStartIndex,
@@ -1828,6 +1915,7 @@
       }
       const collectPageBreakRows = () => {
         if (!pageBreakMarkers.length) return [];
+        const scrollY = window.scrollY || window.pageYOffset || 0;
         const tolerance = Math.max(CONFIG.EDGE_TOLERANCE_PX, 1);
         const totalRows = Math.max(0, rowEdges.length - 1);
         const rows = /* @__PURE__ */ new Set();
@@ -1878,24 +1966,37 @@
       return content.get(job.base64);
     };
     const getImageRange = (worksheet, tl, ext) => {
-      const endMarker = (coordinate, sizePx, isColumn) => {
-        let index = Math.floor(coordinate);
-        const cell = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
-        const startUnits = isColumn ? cell.isCustomWidth ? Math.floor(cell.width * 1e4) : 64e4 : cell.height ? Math.floor(cell.height * 1e4) : 18e4;
-        let offset = Math.floor((coordinate - index) * startUnits) + Math.round(sizePx * 9525);
+      const spanEmu = (index, isColumn) => {
+        const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
+        return isColumn ? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525 : Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+      };
+      const advance = (index, offset, isColumn) => {
         const limit = isColumn ? 16383 : 1048575;
         for (; ; ) {
-          const current = isColumn ? worksheet.getColumn(index + 1) : worksheet.getRow(index + 1);
-          const span = isColumn ? columnWidthToPixels(toPositiveNumber(current.width) || worksheet.properties.defaultColWidth || 8.43) * 9525 : Math.round((toPositiveNumber(current.height) || worksheet.properties.defaultRowHeight || 15) * 12700);
+          const span = spanEmu(index, isColumn);
           if (offset < span) return { index, offset };
           if (index >= limit) throw new RangeError("Image extends beyond the worksheet boundary");
           offset -= span;
           index++;
         }
       };
-      const col = endMarker(tl.col, ext.width, true);
-      const row = endMarker(tl.row, ext.height, false);
-      return { tl, br: {
+      const start = (coordinate, isColumn) => {
+        const index = Math.floor(coordinate);
+        let offset = Math.round((coordinate - index) * spanEmu(index, isColumn));
+        if (!isColumn && offset < 2 * 9525 && worksheet.rowBreaks?.some((brk) => brk.id === index)) {
+          offset = 2 * 9525;
+        }
+        return advance(index, offset, isColumn);
+      };
+      const fromCol = start(tl.col, true), fromRow = start(tl.row, false);
+      const col = advance(fromCol.index, fromCol.offset + Math.round(ext.width * 9525), true);
+      const row = advance(fromRow.index, fromRow.offset + Math.round(ext.height * 9525), false);
+      return { tl: {
+        nativeCol: fromCol.index,
+        nativeColOff: fromCol.offset,
+        nativeRow: fromRow.index,
+        nativeRowOff: fromRow.offset
+      }, br: {
         nativeCol: col.index,
         nativeColOff: col.offset,
         nativeRow: row.index,
@@ -2333,16 +2434,25 @@
 
   // src/workbook.js
   function createWorkbookWriter(dependencies) {
-    const { CONFIG, EXPORT_SCALE, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
+    const { CONFIG, EXPORT_SCALE, EXCEL_MAX_DIGIT_WIDTH, ExcelJS, FONT_SCALE, ROW_SCALE, columnWidthToPixels, convertImageJob, debugLog, errorLog, placeImages, pxToColumnWidth, pxToPoint, warnLog, mapWithConcurrency: mapWithConcurrency2 } = dependencies;
     const applyColumnWidths = (worksheet, columnWidthsPx) => {
-      worksheet.columns = columnWidthsPx.map((px) => ({ width: pxToColumnWidth(px, EXPORT_SCALE) }));
+      let totalPixels = 0, writtenPixels = 0;
+      worksheet.columns = columnWidthsPx.map((px) => {
+        totalPixels += pxToColumnWidth(px, EXPORT_SCALE) * EXCEL_MAX_DIGIT_WIDTH;
+        const pixels = Math.max(1, Math.round(totalPixels) - writtenPixels);
+        writtenPixels += pixels;
+        return { width: Math.floor(pixels / EXCEL_MAX_DIGIT_WIDTH * 256) / 256 };
+      });
     };
     const applyRowHeights = (worksheet, rowHeightsPx) => {
+      let totalPoints = 0, writtenPoints = 0;
       rowHeightsPx.forEach((px, idx) => {
         const row = worksheet.getRow(idx + 1);
         const heightByRowScale = pxToPoint(px, ROW_SCALE);
         const heightByFontScale = pxToPoint(px, FONT_SCALE);
-        row.height = Math.max(heightByRowScale, heightByFontScale);
+        totalPoints += Math.max(heightByRowScale, heightByFontScale);
+        row.height = Math.max(0.75, Math.round(totalPoints / 0.75) * 0.75 - writtenPoints);
+        writtenPoints += row.height;
         row.alignment = row.alignment || { vertical: "top" };
       });
     };
@@ -2410,8 +2520,11 @@
       setup.scale = scale;
     };
     const writeCellsToSheet = (worksheet, model) => {
-      const occupancy = /* @__PURE__ */ new Set();
+      const occupancy = /* @__PURE__ */ new Map();
+      const textFor = (cell) => String(cell.value ?? "").trim();
       const sortedCells = model.cells.slice().sort((a, b) => {
+        const contentOrder = Number(Boolean(textFor(b))) - Number(Boolean(textFor(a)));
+        if (contentOrder) return contentOrder;
         if (a.rowStart !== b.rowStart) return a.rowStart - b.rowStart;
         return a.colStart - b.colStart;
       });
@@ -2420,22 +2533,67 @@
         const rowEnd = cell.rowEnd;
         const colStart = cell.colStart + 1;
         const colEnd = cell.colEnd;
-        const key = `${rowStart},${colStart}`;
-        if (occupancy.has(key)) {
-          const existing = worksheet.getCell(rowStart, colStart).value;
-          const text = String(cell.value ?? "").trim();
-          if (text && text !== String(existing ?? "").trim()) {
-            throw new Error("Overlapping non-empty cells at " + key + "; adjust the HTML table structure or edgeTolerancePx");
-          }
-          continue;
-        }
         const mergeRowEnd = Math.max(rowStart, rowEnd);
         const mergeColEnd = Math.max(colStart, colEnd);
+        const text = textFor(cell);
+        let collision;
+        for (let r = rowStart; r <= mergeRowEnd && !collision; r++) {
+          for (let c = colStart; c <= mergeColEnd; c++) {
+            const existing = occupancy.get(`${r},${c}`);
+            if (existing) {
+              collision = { existing, row: r, column: c };
+              break;
+            }
+          }
+        }
+        if (collision && text) {
+          const existing = collision.existing;
+          const position = existing.sheetPosition;
+          if (text === textFor(existing) && position.rowStart === rowStart && position.rowEnd === mergeRowEnd && position.colStart === colStart && position.colEnd === mergeColEnd) {
+            cell.sheetPosition = { ...position };
+            continue;
+          }
+          const error = new Error("Overlapping non-empty cells at " + collision.row + "," + collision.column + "; adjust the HTML table structure or edgeTolerancePx");
+          error.code = "XLSX_CELL_OVERLAP";
+          error.conflicts = [existing, cell].map((region) => ({
+            rowStart: region.rowStart + 1,
+            rowEnd: region.rowEnd,
+            colStart: region.colStart + 1,
+            colEnd: region.colEnd,
+            bounds: region.bounds,
+            tag: region.element?.tagName,
+            id: region.element?.id || void 0,
+            valueType: typeof region.value,
+            textLength: textFor(region).length
+          }));
+          throw error;
+        }
+        if (collision) {
+          for (let r = rowStart; r <= mergeRowEnd; r++) {
+            for (let c = colStart; c <= mergeColEnd; c++) {
+              if (occupancy.has(`${r},${c}`)) continue;
+              const target = worksheet.getCell(r, c);
+              if (cell.styles.fill) target.fill = cell.styles.fill;
+              const border = { ...target.border };
+              for (const [side, onEdge] of Object.entries({
+                top: r === rowStart,
+                bottom: r === mergeRowEnd,
+                left: c === colStart,
+                right: c === mergeColEnd
+              })) {
+                if (onEdge && cell.styles.border?.[side]) border[side] = cell.styles.border[side];
+              }
+              target.border = border;
+            }
+          }
+          cell.sheetPosition = { rowStart, rowEnd: mergeRowEnd, colStart, colEnd: mergeColEnd };
+          continue;
+        }
         if (mergeRowEnd > rowStart || mergeColEnd > colStart) {
           worksheet.mergeCells(rowStart, colStart, mergeRowEnd, mergeColEnd);
         }
         const targetCell = worksheet.getCell(rowStart, colStart);
-        targetCell.value = cell.value;
+        targetCell.value = cell.richText ? { richText: cell.richText } : cell.value;
         if (cell.styles.font) targetCell.font = cell.styles.font;
         if (cell.styles.alignment) targetCell.alignment = cell.styles.alignment;
         if (cell.styles.border) targetCell.border = cell.styles.border;
@@ -2446,7 +2604,7 @@
         }
         for (let r = rowStart; r <= mergeRowEnd; r++) {
           for (let c = colStart; c <= mergeColEnd; c++) {
-            occupancy.add(`${r},${c}`);
+            occupancy.set(`${r},${c}`, cell);
           }
         }
         cell.sheetPosition = {
@@ -2500,6 +2658,19 @@
         }
       }
     };
+    const fitMultilineText = (worksheet, model) => {
+      if (!CONFIG.PRESERVE_RICH_TEXT) return;
+      for (const cell of model.cells) {
+        if (typeof cell.value !== "string" || !cell.styles.alignment?.wrapText) continue;
+        const lines = cell.value.trim().split("\n").length;
+        if (lines < 2) continue;
+        const fontSize = cell.styles.font?.size || CONFIG.NORMAL_FONT?.size || 11;
+        const minimum = lines * Math.ceil(fontSize * 4 / 3 / 0.75) * 0.75 + 0.75;
+        let height = 0;
+        for (let r = cell.rowStart + 1; r <= cell.rowEnd; r++) height += worksheet.getRow(r).height;
+        if (height < minimum) worksheet.getRow(cell.rowEnd).height += minimum - height;
+      }
+    };
     const applyPageSetupOptions = (worksheet) => {
       if (!CONFIG.PAGE_SETUP) return;
       const { margins, ...pageSetupRest } = CONFIG.PAGE_SETUP;
@@ -2543,8 +2714,12 @@
       applyRowHeights(worksheet, layoutModel.rowHeightsPx);
       debugLog("Writing cell content");
       writeCellsToSheet(worksheet, layoutModel);
+      fitMultilineText(worksheet, layoutModel);
       applyDeferredBorders(worksheet, layoutModel);
       applyPageBreaks(worksheet, layoutModel);
+      if (!worksheet.pageSetup.printArea && layoutModel.columnWidthsPx.length && layoutModel.rowHeightsPx.length) {
+        worksheet.pageSetup.printArea = "A1:" + worksheet.getColumn(layoutModel.columnWidthsPx.length).letter + layoutModel.rowHeightsPx.length;
+      }
       fitMarkedPagesForPrint(worksheet);
       return worksheet;
     };
@@ -2587,7 +2762,24 @@
       }
     };
     const writeWorkbookToBuffer = async (workbook) => {
+      const xlsx = workbook.xlsx;
+      const originalAddStyles = xlsx.addStyles;
       try {
+        if (CONFIG.NORMAL_FONT) {
+          if (typeof originalAddStyles !== "function") throw new Error("ExcelJS Normal-style serialization is unsupported");
+          xlsx.addStyles = async (zip, model) => {
+            const styles = model.styles;
+            const fonts = styles?.model?.fonts;
+            if (!Array.isArray(fonts) || !fonts.length || typeof styles.map?.font?.toXml !== "function") {
+              throw new Error("ExcelJS Normal-style serialization is unsupported");
+            }
+            fonts[0] = styles.map.font.toXml(CONFIG.NORMAL_FONT);
+            const xml = styles.xml;
+            const normal = /<cellStyle\b[^>]*\bname="Normal"[^>]*\/>/;
+            if (!normal.test(xml)) throw new Error("ExcelJS Normal-style definition is missing");
+            zip.append(xml.replace(normal, (tag) => tag.replace(/\/>$/, ' customBuiltin="1"/>')), { name: "xl/styles.xml" });
+          };
+        }
         logWorkbookMediaSummary(workbook);
         debugLog("Writing workbook buffer");
         const buffer = await workbook.xlsx.writeBuffer();
@@ -2596,6 +2788,8 @@
       } catch (err) {
         errorLog("writeBuffer failed", { code: "WORKBOOK_WRITE_FAILED", error: err });
         throw err;
+      } finally {
+        if (CONFIG.NORMAL_FONT) xlsx.addStyles = originalAddStyles;
       }
     };
     const sanitizeSheetName = (name) => (name || "Sheet1").replace(/[\\/*?:\[\]]/g, "").slice(0, 31) || "Sheet1";
@@ -2657,8 +2851,13 @@
       debugLog: (...args) => {
         if (CONFIG.DEBUG) console.debug("[html-to-xlsx]", ...args);
       },
-      detectCurrency: (raw) => detectCurrency(raw, { currency, locale }),
-      parseCellValue: (text, cell) => parseCellValue(text, cell, { currency, locale }),
+      detectCurrency: (raw) => detectCurrency(raw, { currency, locale, currencyDisplay: options.currencyDisplay }),
+      parseCellValue: (text, cell) => parseCellValue(text, cell, {
+        currency,
+        locale,
+        currencyDisplay: options.currencyDisplay,
+        cellType: options.cellType
+      }),
       mapWithConcurrency
     };
     Object.assign(dependencies, createLayoutMetrics(dependencies));
@@ -2698,10 +2897,19 @@
         }
       }
     );
-    const layoutModel = dependencies.buildLayoutModel(root);
+    let layoutModel = dependencies.buildLayoutModel(root);
     if (!layoutModel.cells.length && !layoutModel.images.length) throw new Error("No visible table cells to export");
-    const workbook = dependencies.createWorkbook();
-    const worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+    let workbook = dependencies.createWorkbook();
+    let worksheet;
+    try {
+      worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+    } catch (error) {
+      if (error?.code !== "XLSX_CELL_OVERLAP") throw error;
+      layoutModel = dependencies.buildLayoutModel(root, true);
+      workbook = dependencies.createWorkbook();
+      worksheet = dependencies.prepareWorksheet(workbook, layoutModel);
+      warnLog("Preserved exact DOM boundaries to separate colliding grid regions", { code: "GRID_REFINED" });
+    }
     await dependencies.processAndPlaceImages(workbook, worksheet, layoutModel);
     const buffer = await dependencies.writeWorkbookToBuffer(workbook);
     const filename = filenameFor(options.filename);
@@ -2744,6 +2952,19 @@
   }
 
   // adapters/globe3.js
+  function quantityCellType(root, locale, element, text) {
+    const cell = element.closest("td, th");
+    if (!cell?.closest("table.rowitem") || parseLocalizedNumber(text, locale) === null) return;
+    const bounds = cell.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    for (const header of root.querySelectorAll("table.rowheader td, table.rowheader th, table#rowheader td, table#rowheader th")) {
+      if (!/^(qty\.?|quantity|數量|数量)$/i.test(header.innerText.trim())) continue;
+      const column = header.getBoundingClientRect();
+      if (column.width > 0 && column.height > 0 && column.top <= bounds.top && Math.abs(column.left - bounds.left) <= 2 && Math.abs(column.right - bounds.right) <= 2) {
+        return "number";
+      }
+    }
+  }
   function installGlobe3(api, documentRoot = document) {
     const root = documentRoot.querySelector(".exp_to_excel_button_content");
     if (!root) return;
@@ -2751,14 +2972,35 @@
       root,
       currency: root.getAttribute("data-excel-currency") || "USD",
       locale: root.getAttribute("data-excel-locale") || "en-US",
+      cellType: (element, text) => quantityCellType(
+        root,
+        root.getAttribute("data-excel-locale") || "en-US",
+        element,
+        text
+      ),
       exclude: ["[data-xlsx-ignore]", "table#mainapproval", "table#ext_id", "table#myMenu"],
-      pageBreakSelector: "[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf"
+      pageBreakSelector: "[data-xlsx-page-break], .pagebreak_bf_processed, .pagebreak_bf",
+      // Keep editable cells while retaining the printform's physical text/image sizes.
+      fontScale: 1,
+      normalFont: { name: "Arial", size: 9 },
+      minColumnWidthPx: 1,
+      imageWidthScale: 1,
+      imagePlacement: "precise",
+      preserveSingleLine: true,
+      preserveRichText: true,
+      includeBackgrounds: false,
+      pageSetup: {
+        horizontalCentered: false,
+        margins: { left: 0.25, right: 0.25, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 }
+      }
     };
     window.exportPrintFormToXlsx = () => api.exportXlsx(options);
     const button = documentRoot.querySelector(".html_to_excel_btn");
     if (button && !button.hasAttribute("data-xlsx-button")) {
       api.bindButton(button, options);
-      button.addEventListener("xlsx:error", () => {
+      button.addEventListener("xlsx:error", (event) => {
+        const regions = event.detail?.conflicts ? " | regions: " + JSON.stringify(event.detail.conflicts) : "";
+        console.error("XLSX export failed: " + (event.detail?.message || "Unknown export error") + regions);
         alert("Export failed. Check the export container, options and ExcelJS dependency.");
       });
     }

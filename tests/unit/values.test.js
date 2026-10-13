@@ -8,6 +8,15 @@ test('ambiguous dollar is text unless a document currency is configured', () => 
     assert.equal(detectCurrency('$ 1,200.00', { currency: 'USD' }).value, 1200);
     assert.equal(detectCurrency('$ 1,200.00', { currency: 'SGD' }).value, 1200);
 });
+
+test('source currency display keeps symbols and suffixes without changing numeric values', () => {
+    const options = { currency: 'HKD', currencyDisplay: 'source' };
+    assert.deepEqual(detectCurrency('$ 1,800.00', options), { value: 1800, numFmt: '"$" #,##0.00;("$" #,##0.00)' });
+    assert.deepEqual(detectCurrency('1,800.00 HKD', options), { value: 1800, numFmt: '#,##0.00 "HKD";(#,##0.00 "HKD")' });
+    assert.deepEqual(detectCurrency('HK$900.00', options), { value: 900, numFmt: '"HK$"#,##0.00;("HK$"#,##0.00)' });
+    assert.equal(detectCurrency('($ 3,000.00)', options).value, -3000);
+    assert.equal(detectCurrency('$ 1,800.00', { currency: 'HKD' }).numFmt, currencyFormat('HKD'));
+});
 test('explicit currency takes precedence and supports currencies beyond the legacy list', () => {
     for (const [raw, code, expected] of [
         ['HK$ 10.50', 'HKD', 10.5], ['USD 20.25', 'USD', 20.25],
