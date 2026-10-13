@@ -36,8 +36,8 @@ regression test failed on the code before its fix.
 | BUG-14 | Low | Layout | The GRID_REFINED retry widens the sheet | Code | Open |
 | BUG-15 | Low | Workbook | A rowScale smaller than fontScale has no effect | Code | Open |
 | BUG-16 | Low | Styles | The inline-style border fallback revives borders hidden by `!important` rules | Code | Open |
-| BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code | Open |
-| BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Open |
+| BUG-17 | Low | Workbook | Outer table borders overwrite inner cell borders on the same edge | Code | Resolved by `70d781f` |
+| BUG-18 | Low | Layout | Shared-border propagation is quadratic in the cell count | Code | Resolved by `70d781f` |
 | BUG-19 | Low | Images | Raster canvases have no size cap | Verified | Fixed |
 | BUG-20 | Low | Config | sheetName is not validated | Code | Open |
 
@@ -139,7 +139,7 @@ regression test failed on the code before its fix.
   `defaultRowHeight="0.75" customHeight="1"`. Rows a user adds below the printform are
   practically invisible.
 - **Cause:** the default row height is derived from `MIN_ROW_HEIGHT_PX`
-  ([src/workbook.js](src/workbook.js) lines 281-287). Every grid row already receives an
+  ([src/workbook.js](src/workbook.js) lines 291-297). Every grid row already receives an
   explicit height.
 - **Fix:** leave Excel's default row height (15pt) unchanged.
 
@@ -188,7 +188,7 @@ regression test failed on the code before its fix.
 ### BUG-13 Row heights are not capped at Excel's 409pt maximum
 
 - **Cause:** `applyRowHeights` and `fitMultilineText`
-  ([src/workbook.js](src/workbook.js) lines 14-27 and 245) write any height. One HTML
+  ([src/workbook.js](src/workbook.js) lines 15-28 and 255) write any height. One HTML
   cell taller than 545px produces a row above 409pt. How Excel treats such a row has not
   been tested, but content beyond 409pt cannot be shown.
 - **Fix:** split rows taller than 409pt into several rows inside the same merge.
@@ -206,7 +206,7 @@ regression test failed on the code before its fix.
 ### BUG-15 A rowScale smaller than fontScale has no effect
 
 - **Cause:** row height uses `max(ROW_SCALE, FONT_SCALE)`
-  ([src/workbook.js](src/workbook.js) lines 18-22). With the default fontScale of 0.9,
+  ([src/workbook.js](src/workbook.js) lines 19-23). With the default fontScale of 0.9,
   `rowScale: 0.8` is ignored. The README describes rowScale as a row size scale.
 - **Fix:** document the floor, or use rowScale alone.
 
@@ -224,13 +224,16 @@ regression test failed on the code before its fix.
   ([src/workbook.js](src/workbook.js) lines 190-195), unlike `mergeBorderStyle`. A thin
   table border replaces a thicker or colored cell border on the shared edge.
 - **Fix:** keep the wider border, matching the CSS border-collapse rules.
+- **Status:** resolved by `70d781f`. Explicit cell borders are now written after
+  enclosing table borders, so the cell's own border wins on a shared edge.
 
 ### BUG-18 Shared-border propagation is quadratic in the cell count
 
 - **Cause:** `propagateSharedBorders` scans every cell for every bordered side
-  ([src/layout.js](src/layout.js) lines 247-321). Several thousand cells mean tens of
-  millions of comparisons on the main thread.
+  (`src/layout.js` before `70d781f`). Several thousand cells meant tens of millions of
+  comparisons on the main thread.
 - **Fix:** index the cells by edge coordinate.
+- **Status:** resolved by `70d781f`, which removed neighbor border propagation.
 
 ### BUG-19 Raster canvases have no size cap
 
@@ -245,7 +248,7 @@ regression test failed on the code before its fix.
 ### BUG-20 sheetName is not validated
 
 - **Cause:** `resolveOptions` does not check `sheetName`, so a non-string value fails
-  late in `sanitizeSheetName` ([src/workbook.js](src/workbook.js) line 384) with
+  late in `sanitizeSheetName` ([src/workbook.js](src/workbook.js) line 394) with
   `replace is not a function`. Names that begin or end with an apostrophe, and the
   reserved name `History`, are also not handled.
 - **Fix:** validate the option in `resolveOptions`.
