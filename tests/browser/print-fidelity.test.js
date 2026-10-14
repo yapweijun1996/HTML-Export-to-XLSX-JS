@@ -12,7 +12,7 @@ function markerPixels(anchor, sheet) {
 }
 
 for (const mode of ['', 'min']) {
-    test('Globe3 print profile retains physical layout, mixed fonts and document currency ' + (mode || 'source'), async ({ page }) => {
+    test('Globe3 print profile retains physical layout, mixed fonts and printform currency symbol ' + (mode || 'source'), async ({ page }) => {
         await page.goto('/tests/fixtures/print-fidelity.html?mode=' + mode);
         await page.waitForFunction(() => Boolean(window.exportPrintFormToXlsx));
         const download = page.waitForEvent('download');
@@ -70,7 +70,7 @@ for (const mode of ['', 'min']) {
         expect(part.alignment.wrapText).not.toBe(true);
         expect(part.alignment.shrinkToFit).toBe(true);
         expect(cells.filter(cell => typeof cell.value === 'number').map(cell => cell.value)).toEqual([1, 1800, 1800, 1, 1800, 1800, 8700]);
-        expect(cells.filter(cell => cell.numFmt).every(cell => cell.numFmt.includes('"HKD"'))).toBe(true);
+        expect(cells.filter(cell => cell.numFmt).every(cell => cell.numFmt.includes('"$"'))).toBe(true);
         expect(sheet.pageSetup.horizontalCentered).not.toBe(true);
         expect(sheet.pageSetup.fitToPage).toBe(false);
         expect(sheet.pageSetup.scale).toBeGreaterThanOrEqual(98);

@@ -312,8 +312,10 @@ Text cells, merged regions, column widths and row heights retain their geometry.
 The Globe3 adapter uses a print profile: fontScale and imageWidthScale are 1,
 the workbook Normal style is Arial 9 to match the usual 12px printform text,
 imagePlacement is precise, minimum column fragments are 1px, and visible single
-lines and mixed inline fonts are preserved. Amounts use the document currency code
-(for example HKD) in their number format without changing numeric values. Background fills are omitted to match browser
+lines and mixed inline fonts are preserved. Amounts keep the printform's currency
+symbol (for example $) in their number format without changing numeric values; the
+symbol is literal text, so Excel does not localize it, and data-excel-currency still
+decides which amounts are recognized. Background fills are omitted to match browser
 PDF printing with backgrounds disabled. Page content is left-aligned; margins
 are 0.25in left/right and 0.4in top/bottom. Generic API defaults remain unchanged.
 The original DOM and CFML paginator are not modified. Native Excel PDF output

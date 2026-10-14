@@ -66,7 +66,7 @@ for (const mode of ['', 'min']) {
         const amounts = cells.filter(c => typeof c.value === 'number');
         expect(amounts.map(c => c.value)).toEqual([1800, 3000, -3000]);
         for (const cell of amounts) {
-            expect(cell.numFmt).toContain('"HKD"');
+            expect(cell.numFmt).toContain('"$"');
             expect(cell.alignment.shrinkToFit).toBe(true);
             expect(cell.alignment.wrapText).not.toBe(true);
             expect(cell.isMerged).toBe(true);

@@ -21,7 +21,7 @@
 - Correct OOXML column-width conversion and cumulative grid rounding. Use physical
   EMUs for both drawing markers and an explicit print area for the exported grid.
 - Add a Globe3 print profile retaining original text/image sizes and positions,
-  visible single-line labels, mixed inline fonts and the document currency code.
+  visible single-line labels, mixed inline fonts and the printform currency symbol.
   Keep numeric values editable and generic API configuration isolated.
 - Align the Globe3 print origin and margins and omit print background fills.
   Inset pictures at manual page boundaries to prevent preceding-page residue.

@@ -294,10 +294,11 @@ whose last caller was the removed inline border fallback.
 
 ## Globe3 notes
 
-- The deployed `folder_javascript/export_to_xlsx.js` predates `f7556fd`.
-  Re-exported printforms keep the old behaviour until it is redeployed.
-- Printforms with a hardcoded label such as `Total Amount HKD:` now show the code twice,
-  because the amount format also contains `HKD`.
+- `folder_javascript/export_to_xlsx.js` is redeployed by copying `dist/export_to_xlsx.js`;
+  printforms keep the previous build until then. Its git history holds the earlier build.
+- Printforms with a hardcoded label such as `Total Amount HKD:` showed the code twice while
+  the adapter displayed currency codes. The adapter now keeps the printform's own symbol
+  (`$`), at the request of Globe3 users, so the code appears only in the label.
 - The sample export `Globe3 ERP_2026-10-13T07-04-36-381Z.xlsx` has a print scale of 92%,
   and the limit is page height: its columns fit the A4 printable width at 100%. Its
   margins (0.5in sides) are the generic defaults, not the adapter's 0.25in. Because the

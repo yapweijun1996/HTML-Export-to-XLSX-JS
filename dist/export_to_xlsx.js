@@ -2761,6 +2761,8 @@
       root,
       currency: root.getAttribute("data-excel-currency") || "USD",
       locale: root.getAttribute("data-excel-locale") || "en-US",
+      // Show the printform's own symbol ($), not the ISO code; values stay numeric.
+      currencyDisplay: "source",
       cellType: (element, text, context) => quantityCellType(
         root,
         root.getAttribute("data-excel-locale") || "en-US",
